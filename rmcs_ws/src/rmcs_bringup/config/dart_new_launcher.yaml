@@ -1,0 +1,70 @@
+rmcs_executor:
+  ros__parameters:
+    update_rate: 1000.0
+    components:
+      - rmcs_core::hardware::DartNewLauncher -> hardware
+      - rmcs_core::controller::dart::CarriageHoming -> carriage_homing
+      - rmcs_core::controller::pid::PidController -> carriage_motor_velocity_pid
+      - rmcs_core::broadcaster::ValueBroadcaster -> value_broadcaster
+
+hardware:
+  ros__parameters:
+    board_serial: ""
+
+    # 微动开关：固定在 Board Lite 的 UART1_RX 上
+    micro_switch_pull_up: true
+    micro_switch_active_low: true
+    micro_switch_read_period_ms: 10
+
+    # 弹舱电机：M3508 / CAN0 / ID1 / 19:1 输出轴速度
+    carriage_motor_id: 1
+    carriage_motor_reduction_ratio: 19.0
+    carriage_motor_reversed: false
+
+# 全链路验证：向上撞微动开关归零，再向下运行到工作位。
+# 方向反了就把 up_sign 改成 -1（或改 hardware 的 carriage_motor_reversed）。
+carriage_homing:
+  ros__parameters:
+    enabled: true
+
+    # 向上对应 velocity 的正负：+1 = 正速度向上，-1 = 负速度向上
+    # 实测：正速度是向下，所以向上取 -1
+    up_sign: -1.0
+
+    # 阶段 1：向上找微动开关
+    homing_speed: 6.0          # rad/s（输出轴），撞上去要慢
+    homing_timeout_ms: 8000    # 超时保护，走这么久还没撞到就停车报警
+
+    # 阶段 2：撞到后退离开关，避免抖动
+    back_off_speed: 6.0        # rad/s
+    back_off_angle: 0.5        # rad，退开的距离
+
+    # 阶段 3：向下运行到工作位
+    down_speed: 12.0           # rad/s
+    down_angle: 6.0            # rad，向下走的距离（相对撞停点，含退离段）
+
+carriage_motor_velocity_pid:
+  ros__parameters:
+    measurement: /dart/carriage_motor/velocity
+    setpoint: /dart/carriage_motor/control_velocity
+    control: /dart/carriage_motor/control_torque
+    kp: 0.3
+    ki: 0.0
+    kd: 0.0
+    integral_min: -500.0
+    integral_max: 500.0
+    output_min: -3.0
+    output_max: 3.0
+
+value_broadcaster:
+  ros__parameters:
+    forward_list:
+      - /dart/micro_switch/observed
+      - /dart/remote/switch_left
+      - /dart/remote/switch_right
+      - /dart/remote/valid
+      - /dart/carriage_motor/applied_torque
+      - /dart/carriage_motor/velocity
+      - /dart/carriage_motor/control_velocity
+      - /dart/carriage_motor/angle
+      - /dart/carriage_motor/torque
