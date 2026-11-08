@@ -3,7 +3,7 @@ rmcs_executor:
     update_rate: 1000.0
     components:
       - rmcs_core::hardware::DartNewLauncher -> hardware
-      - rmcs_core::controller::dart::CarriageHoming -> carriage_homing
+      - rmcs_core::controller::dart::ManualCarriageControl -> manual_carriage_control
       - rmcs_core::controller::pid::PidController -> carriage_motor_velocity_pid
       - rmcs_core::broadcaster::ValueBroadcaster -> value_broadcaster
 
@@ -21,27 +21,14 @@ hardware:
     carriage_motor_reduction_ratio: 19.0
     carriage_motor_reversed: false
 
-# 全链路验证：向上撞微动开关归零，再向下运行到工作位。
-# 方向反了就把 up_sign 改成 -1（或改 hardware 的 carriage_motor_reversed）。
-carriage_homing:
+# 手动控制：遥控器右摇杆 X 控制弹舱速度。
+# 摇杆拉满时的速度取归零阶段的值：向下 12.0（down_speed），向上 6.0（homing_speed）。
+manual_carriage_control:
   ros__parameters:
-    enabled: true
-
-    # 向上对应 velocity 的正负：+1 = 正速度向上，-1 = 负速度向上
-    # 实测：正速度是向下，所以向上取 -1
-    up_sign: -1.0
-
-    # 阶段 1：向上找微动开关
-    homing_speed: 6.0          # rad/s（输出轴），撞上去要慢
-    homing_timeout_ms: 8000    # 超时保护，走这么久还没撞到就停车报警
-
-    # 阶段 2：撞到后退离开关，避免抖动
-    back_off_speed: 6.0        # rad/s
-    back_off_angle: 0.5        # rad，退开的距离
-
-    # 阶段 3：向下运行到工作位
-    down_speed: 12.0           # rad/s
-    down_angle: 6.0            # rad，向下走的距离（相对撞停点，含退离段）
+    joystick_axis: "right_x"      # left_x / left_y / right_x / right_y
+    sensitivity_forward: 10.0     # 摇杆正向打满 → rad/s（对应向下）
+    sensitivity_reverse: 10.0      # 摇杆反向打满 → rad/s（对应向上，慢一档）
+    deadzone: 0.05                # 摇杆回中死区，避免电机蠕动
 
 carriage_motor_velocity_pid:
   ros__parameters:

@@ -8,6 +8,7 @@
 #include "hardware/device/dji_motor.hpp"
 #include "hardware/device/dr16.hpp"
 #include "hardware/device/limit_switch.hpp"
+#include "hardware/device/remote_control.hpp"
 
 #include <librmcs/board/rmcs_board_lite.hpp>
 #include <librmcs/data/datas.hpp>
@@ -73,7 +74,8 @@ private:
             std::string_view board_serial = {})
             : logger_(launcher.get_logger())
             , micro_switch_(launcher, "/dart/micro_switch")
-            , carriage_motor_(launcher, launcher_command, "/dart/carriage_motor") {
+            , carriage_motor_(launcher, launcher_command, "/dart/carriage_motor")
+            , remote_control_(launcher) {
 
             // 微动开关
             micro_switch_pull_up_ = launcher.get_parameter("micro_switch_pull_up").as_bool();
@@ -112,6 +114,9 @@ private:
                                                   : librmcs::data::GpioPull::kNone,
                 });
 
+            // 遥控输入：RemoteControl 把 DR16 转成 /remote/joystick/* 等标准接口
+            remote_control_.register_dr16(&dr16_);
+
             RCLCPP_INFO(
                 logger_, "[DartNewLauncher] ready: micro_switch on UART1_RX, motor id=%u ratio=%.2f",
                 motor_id, motor_ratio);
@@ -122,6 +127,7 @@ private:
             *micro_switch_observed_ = micro_switch_.status() ? 1.0 : 0.0;
 
             dr16_.update_status();
+            remote_control_.update();
             update_motor_enable();
 
             // 调试观察
@@ -205,6 +211,7 @@ private:
         OutputInterface<double> micro_switch_observed_;
         device::DjiMotor carriage_motor_;
         device::Dr16 dr16_;
+        device::RemoteControl remote_control_;
 
         OutputInterface<double> remote_switch_left_;
         OutputInterface<double> remote_switch_right_;
