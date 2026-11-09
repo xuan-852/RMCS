@@ -3,8 +3,12 @@ rmcs_executor:
     update_rate: 1000.0
     components:
       - rmcs_core::hardware::DartNewLauncher -> hardware
-      - rmcs_core::controller::dart::ManualCarriageControl -> manual_carriage_control
+      - rmcs_core::controller::dart::ManualDispatcher -> manual_dispatcher
+      - rmcs_core::controller::dart::CarriageNewController -> carriage_new_controller
+      - rmcs_core::controller::dart::BeltNewController -> belt_new_controller
       - rmcs_core::controller::pid::PidController -> carriage_motor_velocity_pid
+      - rmcs_core::controller::pid::PidController -> belt_left_velocity_pid
+      - rmcs_core::controller::pid::PidController -> belt_right_velocity_pid
       - rmcs_core::broadcaster::ValueBroadcaster -> value_broadcaster
 
 hardware:
@@ -21,14 +25,59 @@ hardware:
     carriage_motor_reduction_ratio: 19.0
     carriage_motor_reversed: false
 
-# 手动控制：遥控器右摇杆 X 控制弹舱速度。
-# 摇杆拉满时的速度取归零阶段的值：向下 12.0（down_speed），向上 6.0（homing_speed）。
-manual_carriage_control:
+    # 同步带左右电机：M3508 / CAN0 / 19:1
+    # ID 待机械装完实测（注意别和 carriage 撞号）
+    belt_left_motor_id: 2
+    belt_right_motor_id: 3
+    belt_motor_reduction_ratio: 19.0
+    # 镜像安装，一侧必须翻转坐标系，让两侧 /angle /velocity /torque 同向
+    belt_left_motor_reversed: false
+    belt_right_motor_reversed: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CarriageNewController
+#
+# 本控制器只做两件事：
+#   ① 手动遥控器映射控制
+#   ② 归零定位（上电自动触发，由下面的 enabled 开关控制）
+#
+# 手动档位由控制器内的 kManual 说明书声明：
+#   左拨杆 UP + 右拨杆 MIDDLE → 手动，输入取右摇杆 Y 轴
+#   该档位下左摇杆 Y 归 belt，与 carriage 互不干扰
+# 分发由 ManualDispatcher 组件遍历完成，本段只放数值参数。
+#
+# sensitivity 方向：摇杆 Y 推上为正值。
+#   正向 → sensitivity_forward，反向 → sensitivity_reverse。
+#   方向配反了就翻符号，不用改代码。
+# ─────────────────────────────────────────────────────────────────────────────
+carriage_new_controller:
   ros__parameters:
-    joystick_axis: "right_x"      # left_x / left_y / right_x / right_y
-    sensitivity_forward: 10.0     # 摇杆正向打满 → rad/s（对应向下）
-    sensitivity_reverse: 10.0      # 摇杆反向打满 → rad/s（对应向上，慢一档）
+    # ── 归零总开关 ──
+    # true  = 上电自动执行归零，期间屏蔽摇杆，跑完/失败后交还手动
+    # false = 上电不跑归零，只响应手动摇杆
+    # 现在机械未全部装完，先保持 false；装完后置 true
+    enabled: false
+
+    # ── 手动 ──
+    sensitivity_forward: 10.0     # 摇杆推到底 → rad/s（输出轴）
+    sensitivity_reverse: 10.0     # 摇杆拉到底 → rad/s（输出轴）
     deadzone: 0.05                # 摇杆回中死区，避免电机蠕动
+
+    # ── 归零 ──
+    # 向上对应的速度符号：+1 = 正速度向上，-1 = 负速度向上
+    # 实测：正速度是向下，所以向上取 -1
+    up_sign: -1.0
+
+    # 向上找微动开关
+    homing_speed: 6.0             # rad/s（输出轴），撞上去要慢
+    homing_timeout_ms: 15000      # 全程总超时（找开关 + 下行），超时停车报错
+
+    # 撞到后向下走：先慢速退离，再按 down_speed 到工作位
+    back_off_speed: 6.0           # rad/s，退离段速度
+    back_off_angle: 0.5           # rad，退开的距离
+    down_speed: 12.0              # rad/s，退离之后的运行速度
+    down_angle: 6.0               # rad，相对撞停点的总位移（含退离段）
+
 
 carriage_motor_velocity_pid:
   ros__parameters:
@@ -42,6 +91,73 @@ carriage_motor_velocity_pid:
     integral_max: 500.0
     output_min: -3.0
     output_max: 3.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BeltNewController
+#
+# 只做三件事：
+#   ① 归零 —— 两侧各自顶硬限位，堵转后把该电机当前位置设为 0 点
+#   ② 手动遥控器控制 —— 左拨杆 UP + 右拨杆 MIDDLE，左摇杆 Y 轴
+#   ③ 左右同步 —— 两侧不共轴，位置差以 sync_gain 折算成速度修正
+#
+# ⚠️ 归零未完成前手动控制完全无效。
+#    同步依赖「两侧编码器都为 0」，未归零时位置差是随机值，
+#    拿它做同步会输出错误修正量，把滑台拽歪。
+# ─────────────────────────────────────────────────────────────────────────────
+belt_new_controller:
+  ros__parameters:
+    # ── 归零总开关 ──
+    # true  = 上电自动归零（两侧顶限位 → 堵转 → 设零点）
+    # false = 上电不归零，手动控制也不可用（等待归零）
+    # 机械装完后置 true
+    enabled: true
+
+    # 向上对应的速度符号：+1 = 正速度向上
+    up_sign: -1.0
+
+    # 顶限位阶段
+    homing_speed: 5.0             # rad/s（输出轴）
+    homing_timeout_ms: 15000       # 全程总超时
+    homing_torque_limit: 0.6       # 顶限位时的力矩上限，别太大
+
+    # 堵转检测
+    stall_velocity_threshold: 0.05
+    stall_torque_threshold: 0.5
+    stall_ticks: 200
+
+    # ── 手动 ──
+    sensitivity_forward: -10.0     # 摇杆推到底 → rad/s
+    sensitivity_reverse: -10.0     # 摇杆拉到底 → rad/s
+    deadzone: 0.05
+    manual_torque_limit: 6.0
+
+    # ── 左右同步 ──
+    # sync_gain = 0 时完全关闭同步（退化为两侧同速），方便先验证机械
+    sync_gain: 0.0                 # (rad/s) / rad，每差 1 rad 修正多少速度
+    sync_correction_max: 5.0       # 单次修正上限
+    sync_err_limit: 2.0            # 同步误差告警阈值（rad）
+    sync_err_fault_ticks: 1000     # 超限持续多少 tick 判故障停车
+
+belt_left_velocity_pid:
+  ros__parameters:
+    measurement: /dart/belt/left_motor/velocity
+    setpoint: /dart/belt/left_motor/control_velocity
+    control: /dart/belt/left_motor/control_torque
+    output_abs_limit: /dart/belt/left_motor/control_torque_limit
+    kp: 1.0
+    ki: 0.0
+    kd: 0.0
+
+belt_right_velocity_pid:
+  ros__parameters:
+    measurement: /dart/belt/right_motor/velocity
+    setpoint: /dart/belt/right_motor/control_velocity
+    control: /dart/belt/right_motor/control_torque
+    output_abs_limit: /dart/belt/right_motor/control_torque_limit
+    kp: 1.0
+    ki: 0.0
+    kd: 0.0
+
 
 value_broadcaster:
   ros__parameters:

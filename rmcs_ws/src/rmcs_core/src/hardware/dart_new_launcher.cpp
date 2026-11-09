@@ -75,6 +75,8 @@ private:
             : logger_(launcher.get_logger())
             , micro_switch_(launcher, "/dart/micro_switch")
             , carriage_motor_(launcher, launcher_command, "/dart/carriage_motor")
+            , belt_left_motor_(launcher, launcher_command, "/dart/belt/left_motor")
+            , belt_right_motor_(launcher, launcher_command, "/dart/belt/right_motor")
             , remote_control_(launcher) {
 
             // 微动开关
@@ -103,6 +105,34 @@ private:
             if (launcher.get_parameter("carriage_motor_reversed").as_bool())
                 motor_config.set_reversed();
             carriage_motor_.configure(motor_config);
+
+            // 同步带电机（左右各一，19:1，镜像安装需一侧 reversed）
+            const auto belt_left_id =
+                static_cast<std::uint8_t>(launcher.get_parameter("belt_left_motor_id").as_int());
+            const auto belt_right_id =
+                static_cast<std::uint8_t>(launcher.get_parameter("belt_right_motor_id").as_int());
+            const auto belt_ratio =
+                launcher.get_parameter("belt_motor_reduction_ratio").as_double();
+
+            auto belt_left_config =
+                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, belt_left_id};
+            belt_left_config.set_reduction_ratio(belt_ratio).enable_multi_turn_angle();
+            if (launcher.get_parameter("belt_left_motor_reversed").as_bool())
+                belt_left_config.set_reversed();
+            belt_left_motor_.configure(belt_left_config);
+
+            auto belt_right_config =
+                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, belt_right_id};
+            belt_right_config.set_reduction_ratio(belt_ratio).enable_multi_turn_angle();
+            if (launcher.get_parameter("belt_right_motor_reversed").as_bool())
+                belt_right_config.set_reversed();
+            belt_right_motor_.configure(belt_right_config);
+
+            // 归零请求：控制器写 true 时把该电机当前位置设为 0 点
+            launcher_command.register_input(
+                "/dart/belt/left_motor/calibrate_zero", belt_left_calibrate_, false);
+            launcher_command.register_input(
+                "/dart/belt/right_motor/calibrate_zero", belt_right_calibrate_, false);
 
             // 板子
             board_ = std::make_unique<librmcs::board::RmcsBoardLite>(*this, board_serial);
@@ -138,6 +168,19 @@ private:
 
         void command_update() {
             carriage_motor_.update_status();
+            belt_left_motor_.update_status();
+            belt_right_motor_.update_status();
+
+            // 归零请求：控制器写 true 时把当前位置设为 0 点
+            if (belt_left_calibrate_.ready() && *belt_left_calibrate_) {
+                belt_left_motor_.calibrate_zero_point();
+                RCLCPP_WARN(logger_, "[DartNewLauncher] belt LEFT zero point calibrated");
+            }
+            if (belt_right_calibrate_.ready() && *belt_right_calibrate_) {
+                belt_right_motor_.calibrate_zero_point();
+                RCLCPP_WARN(logger_, "[DartNewLauncher] belt RIGHT zero point calibrated");
+            }
+
             can_transmit();
         }
 
@@ -157,29 +200,54 @@ private:
             if (!(can == librmcs::spec::rmcs_board_lite::kCanDescriptors.kCan0))
                 return;
             carriage_motor_.match_then_store_status(data.can_id, data.can_data);
+            belt_left_motor_.match_then_store_status(data.can_id, data.can_data);
+            belt_right_motor_.match_then_store_status(data.can_id, data.can_data);
         }
 
         // 把 PidController 算出的力矩发到 CAN0。
         // 失能时发 NaN，DJI 电调会输出零电流（自由转动）。
-        // 0x200 帧可打包 4 个电机，当前只接 1 个，其余槽位填零。
+        // M3508 的 0x200 帧一帧打包 4 个电机，槽位是 (id-1)%4，
+        // 所以三个电机需按 ID 判断落到哪个帧、哪个槽位。
         void can_transmit() {
-            const double torque = motor_disabled_ ? std::numeric_limits<double>::quiet_NaN()
-                                                  : carriage_motor_.control_torque();
-            *applied_torque_ = torque;
-
             auto builder = board_->start_transmit();
-            builder.can_transmit(
-                librmcs::spec::rmcs_board_lite::kCanDescriptors.kCan0,
-                {
-                    .can_id = carriage_motor_.send_id(),
-                    .can_data = device::CanPacket8{
-                        carriage_motor_.generate_command(torque),
-                        device::CanPacket8::PaddingQuarter{},
-                        device::CanPacket8::PaddingQuarter{},
-                        device::CanPacket8::PaddingQuarter{},
-                    }
-                        .as_bytes(),
-                });
+
+            device::CanPacket8 frame_200{
+                device::CanPacket8::PaddingQuarter{}, device::CanPacket8::PaddingQuarter{},
+                device::CanPacket8::PaddingQuarter{}, device::CanPacket8::PaddingQuarter{}};
+            device::CanPacket8 frame_1ff{
+                device::CanPacket8::PaddingQuarter{}, device::CanPacket8::PaddingQuarter{},
+                device::CanPacket8::PaddingQuarter{}, device::CanPacket8::PaddingQuarter{}};
+            bool use_200 = false;
+            bool use_1ff = false;
+
+            const auto place = [&](device::DjiMotor& motor, double torque) {
+                if (motor.id() == 0)
+                    return;
+                const auto slot = static_cast<std::size_t>((motor.id() - 1) % 4);
+                if (motor.send_id() == 0x200) {
+                    frame_200.data[slot] = motor.generate_command(torque).data;
+                    use_200 = true;
+                } else {
+                    frame_1ff.data[slot] = motor.generate_command(torque).data;
+                    use_1ff = true;
+                }
+            };
+
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            place(carriage_motor_, motor_disabled_ ? nan : carriage_motor_.control_torque());
+            place(belt_left_motor_, motor_disabled_ ? nan : belt_left_motor_.control_torque());
+            place(belt_right_motor_, motor_disabled_ ? nan : belt_right_motor_.control_torque());
+
+            *applied_torque_ = carriage_motor_.control_torque();
+
+            if (use_200)
+                builder.can_transmit(
+                    librmcs::spec::rmcs_board_lite::kCanDescriptors.kCan0,
+                    {.can_id = 0x200, .can_data = frame_200.as_bytes()});
+            if (use_1ff)
+                builder.can_transmit(
+                    librmcs::spec::rmcs_board_lite::kCanDescriptors.kCan0,
+                    {.can_id = 0x1FF, .can_data = frame_1ff.as_bytes()});
         }
 
         // 失能条件：
@@ -210,8 +278,13 @@ private:
         device::LimitSwitch micro_switch_;
         OutputInterface<double> micro_switch_observed_;
         device::DjiMotor carriage_motor_;
+        device::DjiMotor belt_left_motor_;
+        device::DjiMotor belt_right_motor_;
         device::Dr16 dr16_;
         device::RemoteControl remote_control_;
+
+        InputInterface<bool> belt_left_calibrate_;
+        InputInterface<bool> belt_right_calibrate_;
 
         OutputInterface<double> remote_switch_left_;
         OutputInterface<double> remote_switch_right_;
