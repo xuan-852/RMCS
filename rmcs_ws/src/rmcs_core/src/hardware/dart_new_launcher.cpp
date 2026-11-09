@@ -171,15 +171,21 @@ private:
             belt_left_motor_.update_status();
             belt_right_motor_.update_status();
 
-            // 归零请求：控制器写 true 时把当前位置设为 0 点
-            if (belt_left_calibrate_.ready() && *belt_left_calibrate_) {
+            // 归零请求：只在 false→true 的跳变时标零一次。
+            // 控制器会继续保持 true，若无边沿检测会每帧重标，导致角度恒为 0。
+            const bool left_request = belt_left_calibrate_.ready() && *belt_left_calibrate_;
+            if (left_request && !belt_left_calibrate_latched_) {
                 belt_left_motor_.calibrate_zero_point();
                 RCLCPP_WARN(logger_, "[DartNewLauncher] belt LEFT zero point calibrated");
             }
-            if (belt_right_calibrate_.ready() && *belt_right_calibrate_) {
+            belt_left_calibrate_latched_ = left_request;
+
+            const bool right_request = belt_right_calibrate_.ready() && *belt_right_calibrate_;
+            if (right_request && !belt_right_calibrate_latched_) {
                 belt_right_motor_.calibrate_zero_point();
                 RCLCPP_WARN(logger_, "[DartNewLauncher] belt RIGHT zero point calibrated");
             }
+            belt_right_calibrate_latched_ = right_request;
 
             can_transmit();
         }
@@ -294,6 +300,10 @@ private:
         bool micro_switch_pull_up_{};
         bool micro_switch_active_low_{};
         bool motor_disabled_{false};
+
+        // 标零请求的边沿锁存（true 保持时不重复标零）
+        bool belt_left_calibrate_latched_{false};
+        bool belt_right_calibrate_latched_{false};
 
         std::unique_ptr<librmcs::board::RmcsBoardLite> board_;
     };

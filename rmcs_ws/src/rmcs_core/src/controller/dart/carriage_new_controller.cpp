@@ -107,15 +107,20 @@ private:
 
         // 上电是否自动启动归零
         enabled_ = get_parameter("enabled").as_bool();
+
+        debug_mode_ = get_parameter("debug_mode").as_bool();
     }
 
     // ── ① 手动遥控器映射控制 ──────────────────────────────────────────────────
     void update_manual(const ManualBinding& binding, const StickSnapshot& sticks) {
-        maybe_startup_homing();
+        // 调试模式：不归零、直接响应摇杆
+        if (!debug_mode_) {
+            maybe_startup_homing();
 
-        // 归零在跑时由它接管输出，屏蔽摇杆，避免边跑边归零
-        if (step_homing())
-            return;
+            // 归零在跑时由它接管输出，屏蔽摇杆，避免边跑边归零
+            if (step_homing())
+                return;
+        }
 
         const double raw = ManualRegistry::axis_value(binding, sticks);
         const double normalized = deadzone_normalize(raw, deadzone_);
@@ -127,6 +132,12 @@ private:
     }
 
     void update_auto() {
+        // 调试模式下自动通道也不跑归零，保持静止
+        if (debug_mode_) {
+            *control_velocity_ = 0.0;
+            return;
+        }
+
         maybe_startup_homing();
 
         if (step_homing())
@@ -244,6 +255,7 @@ private:
     // 归零
     bool enabled_{false};          // 上电是否自动启动归零
     bool startup_checked_{false};  // 上电检查只做一次
+    bool debug_mode_{false};       // 调试模式：跳过归零，直接手动
     double up_sign_{1.0};
 
     double homing_speed_{};

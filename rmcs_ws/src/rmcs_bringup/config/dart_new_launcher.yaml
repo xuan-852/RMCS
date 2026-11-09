@@ -27,8 +27,8 @@ hardware:
 
     # 同步带左右电机：M3508 / CAN0 / 19:1
     # ID 待机械装完实测（注意别和 carriage 撞号）
-    belt_left_motor_id: 2
-    belt_right_motor_id: 3
+    belt_left_motor_id: 3
+    belt_right_motor_id: 2
     belt_motor_reduction_ratio: 19.0
     # 镜像安装，一侧必须翻转坐标系，让两侧 /angle /velocity /torque 同向
     belt_left_motor_reversed: false
@@ -52,6 +52,10 @@ hardware:
 # ─────────────────────────────────────────────────────────────────────────────
 carriage_new_controller:
   ros__parameters:
+    # ── 调试模式 ──
+    # true = 跳过归零逻辑，上电直接响应摇杆（调机械时用）
+    debug_mode: false
+
     # ── 归零总开关 ──
     # true  = 上电自动执行归零，期间屏蔽摇杆，跑完/失败后交还手动
     # false = 上电不跑归零，只响应手动摇杆
@@ -106,6 +110,13 @@ carriage_motor_velocity_pid:
 # ─────────────────────────────────────────────────────────────────────────────
 belt_new_controller:
   ros__parameters:
+    # ── 调试模式 ──
+    # false = 正常：自动归零 + 左右同速 + 同步闭环
+    # true  = 调试：不归零、不同步，左摇杆 Y/X 分别单独驱动左/右电机
+    #         用于单侧卡死时排查，不会因为另一侧跟着动而加剧损坏
+    debug_mode: false
+    debug_torque_limit: 2.0        # 调试模式的力矩上限，比正常小，防拽坏
+
     # ── 归零总开关 ──
     # true  = 上电自动归零（两侧顶限位 → 堵转 → 设零点）
     # false = 上电不归零，手动控制也不可用（等待归零）

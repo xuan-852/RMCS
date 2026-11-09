@@ -59,7 +59,9 @@ public:
         register_output("/dart/belt/right_motor/calibrate_zero", right_calibrate_, false);
 
         load_parameters();
-        ManualRegistry::add(&kManual, this);
+        // 调试模式占左摇杆 X+Y（左右电机各一轴），正常模式只占左摇杆 Y。
+        // 两种模式用同一个拨杆档位，不额外占键位。
+        ManualRegistry::add(debug_mode_ ? &kManualDebug : &kManual, this);
     }
 
     BeltNewController(const BeltNewController&) = delete;
@@ -105,6 +107,9 @@ private:
 
         enabled_ = get_parameter("enabled").as_bool();
 
+        debug_mode_ = get_parameter("debug_mode").as_bool();
+        debug_torque_limit_ = d("debug_torque_limit");
+
         // 向上对应的速度符号：+1 = 正速度为向上
         up_sign_ = d("up_sign") >= 0.0 ? 1.0 : -1.0;
 
@@ -129,6 +134,12 @@ private:
 
     // 统一入口：手动和自动都走这里
     void run(const ManualBinding* binding, const StickSnapshot* sticks) {
+        // 调试模式：不归零、不看 homed_、不做同步，两侧各自独立。
+        if (debug_mode_) {
+            run_debug(binding, sticks);
+            return;
+        }
+
         maybe_startup_homing();
 
         // 归零在跑：由它接管输出，摇杆完全无效
@@ -162,6 +173,29 @@ private:
         *right_control_velocity_ = r_vel;
         *left_control_torque_limit_ = manual_torque_limit_;
         *right_control_torque_limit_ = manual_torque_limit_;
+    }
+
+    // ── 调试模式：左摇杆 Y → 左电机，左摇杆 X → 右电机 ──────────────────────
+    // 无归零、无同步、力矩限幅用 debug_torque_limit。
+    // 用途：单侧卡死时单独排查，不会因为另一侧跟着动而加剧损坏。
+    void run_debug(const ManualBinding* binding, const StickSnapshot* sticks) {
+        if (binding == nullptr || sticks == nullptr) {
+            *left_control_velocity_ = 0.0;
+            *right_control_velocity_ = 0.0;
+            *left_control_torque_limit_ = debug_torque_limit_;
+            *right_control_torque_limit_ = debug_torque_limit_;
+            return;
+        }
+
+        const auto to_velocity = [this](double raw) {
+            const double n = deadzone_normalize(raw, deadzone_);
+            return n * (n >= 0.0 ? sensitivity_forward_ : sensitivity_reverse_);
+        };
+
+        *left_control_velocity_ = to_velocity(sticks->left.y());
+        *right_control_velocity_ = to_velocity(sticks->left.x());
+        *left_control_torque_limit_ = debug_torque_limit_;
+        *right_control_torque_limit_ = debug_torque_limit_;
     }
 
     // ── 同步：交叉耦合，各担一半，总速度守恒 ──────────────────────────────────
@@ -306,6 +340,17 @@ private:
         .ops = &kOps,
     };
 
+    // 调试档位：同一拨杆组合，但左摇杆 Y/X 分别驱动左右电机。
+    // axis 只作登记用（分发时仅校验拨杆），实际两轴在 run_debug 里各自读取。
+    static constexpr ManualBinding kManualDebug{
+        .name = "belt-dbg(Ly=L,Lx=R)",
+        .left = rmcs_msgs::Switch::UP,
+        .right = rmcs_msgs::Switch::MIDDLE,
+        .side = StickSide::kLeft,
+        .axis = StickAxis::kY,
+        .ops = &kOps,
+    };
+
     InputInterface<double> left_angle_;
     InputInterface<double> right_angle_;
     InputInterface<double> left_velocity_;
@@ -345,6 +390,10 @@ private:
     double sensitivity_reverse_{};
     double deadzone_{};
     double manual_torque_limit_{};
+
+    // 调试模式
+    bool debug_mode_{false};
+    double debug_torque_limit_{};
 
     // 同步
     double sync_gain_{};
