@@ -28,6 +28,31 @@
 #
 #   注：UART0_RX (ch0) 现在接的是微动开关，测别的引脚前先确认没插着开关，
 #       否则会把开关那根线拉低/拉高。
+#
+# ─── 实测记录 ───────────────────────────────────────────────────────────────
+#
+#   2026-11-11  mode=hold_low, channel=2：
+#     R (ch2, 被写入)   = 0.0V   ← 能拉低 ✅
+#     T (ch3, 未写入)   = 3.3V   ← 引脚默认上拉态（非写入结果）
+#
+#   注意 T 的 3.3V 不能当作"能拉高"的证据，它压根没被写过。
+#   必须切到 hold_high 再测 ch2，才能判定引脚是否完全可控。
+#
+#   对照实验（一次跑完能同时看到两根线的差异）：
+#     mode: hold_low  , channel: 3   → 期望 T=0.0V, R=3.3V(默认)
+#     mode: hold_high , channel: 3   → 期望 T=3.3V, R=3.3V(区分不出)
+#     mode: hold_low  , channel: 0   → 期望 UART0_RX=0.0V
+#
+# ─── 判定标准 ───────────────────────────────────────────────────────────────
+#
+#   hold_low  读到 0.0V  且  hold_high 读到 3.3V
+#     → 引脚完全可控，软件 PWM 可行，继续测 digital_pulse
+#
+#   hold_low  读到 0.0V  但  hold_high 仍是 0.0V
+#     → 只能拉低不能拉高，开漏/复用限制，软件 PWM 不成立
+#
+#   两档都读到 3.3V
+#     → digital write 根本没通到引脚，换硬件方案
 # ═════════════════════════════════════════════════════════════════════════════
 rmcs_executor:
   ros__parameters:
@@ -38,15 +63,29 @@ rmcs_executor:
 pwm_tester:
   ros__parameters:
     # 当前测试档位：hold_low / hold_high / digital_pulse / analog / sweep / off
-    mode: hold_low
+    #
+    # 实测记录（2026-11-11）：
+    #   hold_low  时 ch2(R) = 0.0V   ← 能拉低 ✅
+    #   hold_high 时 ch2(R) = 3.3V   ← 能拉高 ✅
+    #   → gpio_digital_write 完整通到引脚，软件翻转可行
+    #   （ch3(T) 未被写入时为 3.3V，是默认上拉态，不作为证据）
+    mode: digital_pulse
 
     # 要测哪个引脚：0=UART0_RX 1=UART0_TX 2=UART1_RX 3=UART1_TX
     channel: 2
 
     # digital_pulse 模式：软件翻电平，周期 = high + low
-    # ⚠️ 1kHz tick 下最小脉宽 1ms，只能验证"有没有方波"，不足以精确驱动舵机
-    high_us: 1500.0
-    low_us: 18500.0      # 高 1.5ms + 低 18.5ms = 20ms = 50Hz
+    # ⚠️ update_rate=1kHz 时每 tick = 1ms，脉宽只能取 1ms 整数倍。
+    #    1500us 会被取整成 2 tick 或 1 tick，与真实舵机时序差太多。
+    #    所以这里直接用 tick 粒度能表达的值：
+    #
+    #    high=1000us(1 tick) + low=1000us(1 tick) → 500Hz 方波，占空比 50%
+    #    万用表读约 1.65V，示波器能清楚看到 500Hz 方波。
+    #
+    #    若想验证"占空比可变"，改 high/low 为 1/3、3/1 等组合，
+    #    万用表电压会随之变化（1 tick:3 tick → 0.83V）。
+    high_us: 1000.0
+    low_us: 1000.0
 
     # sweep 模式：每步增加多少
     sweep_step_us: 100.0

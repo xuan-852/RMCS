@@ -179,14 +179,23 @@ private:
 
     // ── 模式 A：软件翻电平 ────────────────────────────────────────────────────
     // 每个 tick 判断是否该翻转，产生 high_us / low_us 的方波。
-    // ⚠️ 精度受 update_rate 限制：1kHz 下最小脉宽 1ms，误差 ±1ms。
-    //    此模式只能验证「引脚能不能出方波」，不足以精确驱动舵机。
+    //
+    // ⚠️ 精度受 update_rate 硬限制：
+    //    1kHz 时每 tick = 1ms，脉宽只能取 1ms 的整数倍。
+    //    舵机需要 1000~2000us 的脉宽，在 1ms 粒度下 1500us 和 2500us
+    //    都会被取整成 1 或 2 tick，**无法分辨**，所以此模式只能验证
+    //    "引脚能以可控频率翻转"，不足以精确驱动舵机。
+    //
+    //    想要驱动舵机，update_rate 至少要 20kHz（每 tick 50us），
+    //    但这会吃掉整机的控制周期预算，不现实。软件 PWM 的结论是：
+    //    翻转能力成立，精度不成立。
     void digital_pulse() {
         ++tick_;
+        // 四舍五入而不是截断，否则 1500us 会算成 1.5 -> 1 tick，误差 33%
         const auto high_ticks =
-            std::max<std::uint32_t>(1, static_cast<std::uint32_t>(high_us_ * ticks_per_us_));
+            std::max<std::uint32_t>(1, static_cast<std::uint32_t>(std::lround(high_us_ * ticks_per_us_)));
         const auto low_ticks =
-            std::max<std::uint32_t>(1, static_cast<std::uint32_t>(low_us_ * ticks_per_us_));
+            std::max<std::uint32_t>(1, static_cast<std::uint32_t>(std::lround(low_us_ * ticks_per_us_)));
 
         const auto phase_ticks = high_ ? high_ticks : low_ticks;
         if (tick_ < phase_ticks)
@@ -196,10 +205,12 @@ private:
 
         digital_write(high_);
 
-        if ((++pulse_count_ % 200) == 0) {
+        // 每 500 次翻转打一行，附带实际生效的 tick 数，方便对照示波器
+        if ((++pulse_count_ % 500) == 0) {
             RCLCPP_INFO(
-                logger_, "[PwmTester] pulse %s, edges=%lu", high_ ? "HIGH" : "LOW",
-                static_cast<unsigned long>(pulse_count_));
+                logger_, "[PwmTester] edges=%lu level=%s (high=%u ticks / low=%u ticks)",
+                static_cast<unsigned long>(pulse_count_), high_ ? "HIGH" : "LOW",
+                static_cast<unsigned>(high_ticks), static_cast<unsigned>(low_ticks));
         }
     }
 
