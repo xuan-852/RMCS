@@ -1,0 +1,52 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# GPIO / PWM 测试专用配置
+#
+# 用途：单独验证 Board Lite 的 GPIO 引脚能不能被软件控制。
+# ⚠️ 与 dart_new_launcher.yaml 互斥 —— 两者都独占同一块板子，不能同时运行。
+#
+# 启动：
+#   set-robot pwm_test
+#   launch-rmcs
+#
+# ─── 测试顺序（由浅入深，前一步不通过就别往下走）─────────────────────────────
+#
+#  第 1 步  mode: hold_low    引脚恒定低电平，万用表应为 0V
+#  第 2 步  mode: hold_high   引脚恒定高电平，万用表应为 3.3V
+#
+#     这两步是硬指标。只有确认能切到低、也能切到高，才说明
+#     gpio_digital_write 这条链路真的通到了引脚，此时才谈得上「软件 PWM」。
+#     若低/高读出来都是 3.3V，说明引脚被 UART 复用占死或固件不处理
+#     digital write —— 那软件 PWM 也就不可能成立，得换硬件方案。
+#
+#  第 3 步  mode: digital_pulse  软件翻电平出方波，示波器看有无波形
+#  第 4 步  mode: analog         复核固件是否解析 analog value
+#  第 5 步  mode: sweep          低频爬 duty，万用表看是否变化
+#  第 6 步  mode: off            不写任何值，观察引脚默认状态
+#
+# ─── channel 可选值 ─────────────────────────────────────────────────────────
+#   0 = UART0_RX    1 = UART0_TX    2 = UART1_RX（默认）    3 = UART1_TX
+#
+#   注：UART0_RX (ch0) 现在接的是微动开关，测别的引脚前先确认没插着开关，
+#       否则会把开关那根线拉低/拉高。
+# ═════════════════════════════════════════════════════════════════════════════
+rmcs_executor:
+  ros__parameters:
+    update_rate: 1000.0
+    components:
+      - rmcs_core::hardware::PwmTester -> pwm_tester
+
+pwm_tester:
+  ros__parameters:
+    # 当前测试档位：hold_low / hold_high / digital_pulse / analog / sweep / off
+    mode: hold_low
+
+    # 要测哪个引脚：0=UART0_RX 1=UART0_TX 2=UART1_RX 3=UART1_TX
+    channel: 2
+
+    # digital_pulse 模式：软件翻电平，周期 = high + low
+    # ⚠️ 1kHz tick 下最小脉宽 1ms，只能验证"有没有方波"，不足以精确驱动舵机
+    high_us: 1500.0
+    low_us: 18500.0      # 高 1.5ms + 低 18.5ms = 20ms = 50Hz
+
+    # sweep 模式：每步增加多少
+    sweep_step_us: 100.0
