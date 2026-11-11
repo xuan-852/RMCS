@@ -3,7 +3,10 @@
 	url = https://github.com/qzhhhi/FastTF.git
 [submodule "rmcs_ws/src/rmcs_dart_automation"]
 	path = rmcs_ws/src/rmcs_dart_automation
-	url = https://github.com/Alliance-Algorithm/rmcs_dart_automation.git
+	# 用自家 fork：上游 Alliance-Algorithm 无 push 权限，本地提交推不上去，
+	# 换机同步时会因 commit 不存在而失败。
+	# 需要跟进上游更新时，在子模块里 fetch 上游代码并合并。
+	url = https://github.com/xuan-852/rmcs_dart_automation.git
 [submodule "rmcs_ws/src/hikcamera"]
 	path = rmcs_ws/src/hikcamera
 	url = https://github.com/Alliance-Algorithm/ros2-hikcamera.git
