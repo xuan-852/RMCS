@@ -75,18 +75,26 @@ carriage_motor_velocity_pid:
 # 纯执行器：把目标速度转发给左右电机，把标零请求转发给硬件层。
 # 归零流程（上推堵转 → 标零）由上位机 dart-init 任务推进。
 #
-# 唯一保留的判断是左右同步：两侧不共轴，位置差以 sync_gain 折算成速度修正。
+# 手动档固定为「左 UP + 右 MIDDLE」，左摇杆驱动。驱动方式由 sync_mode 选：
 #
-# ⚠️ 同步依赖「两侧编码器都为 0」，异步时位置差是随机值，
-#    拿它做同步会输出错误修正量，把滑台拽歪。所以必须先跑过 dart-init 再手动。
+#   sync_mode: same   两侧同速（老镖架行为，推荐先测这个）
+#                     摇杆值原样给两台电机，各自跑速度环，互不干涉。
+#                     漂移靠每次 dart-init 向上归零重置。
+#
+#   sync_mode: sync   同步闭环（交叉耦合修正位置差）
+#                     ⚠️ 依赖两侧编码器都已标零，没跑过 dart-init 会输出错误修正量。
+#
+#   sync_mode: split  左右独立调试：左摇杆 Y=左电机，X=右电机
+#                     力矩改用 debug_torque_limit（比正常小，防拽坏）
+#
+# 运行时切换（不必重启，机械状态不变，对比更公平）：
+#   ros2 param set /belt_new_controller sync_mode sync
 # ─────────────────────────────────────────────────────────────────────────────
 belt_new_controller:
   ros__parameters:
-    # ── 调试模式 ──
-    # false = 正常：左右同速 + 同步闭环
-    # true  = 调试：不同步，左摇杆 Y/X 分别单独驱动左/右电机
-    debug_mode: false
-    debug_torque_limit: 2.0        # 调试模式的力矩上限，比正常小，防拽坏
+    # ── 驱动方式 ──
+    sync_mode: same               # same（两侧不同步） | sync（两侧同步） | split（左右独立调试 —— 左摇杆 Y=左电机，X=右电机，右摇杆 Y=carriage ）
+    debug_torque_limit: 2.0        # split 模式的力矩上限，比正常小，防拽坏
 
     # ── 手动 ──
     sensitivity_forward: -10.0     # 摇杆推到底 → rad/s
@@ -94,9 +102,8 @@ belt_new_controller:
     deadzone: 0.05
     manual_torque_limit: 6.0
 
-    # ── 左右同步 ──
-    # sync_gain = 0 时关闭同步（两侧同速），方便先验证机械
-    sync_gain: 0.0                 # (rad/s) / rad
+    # ── 左右同步（仅 sync_mode: sync 生效）──
+    sync_gain: 0.0                 # (rad/s) / rad，>0 才启用修正
     sync_correction_max: 5.0       # 单次修正上限
     sync_err_limit: 2.0            # 同步误差告警阈值（rad）
     sync_err_fault_ticks: 1000     # 超限持续多少 tick 判故障停车
@@ -129,6 +136,26 @@ value_broadcaster:
       - /dart/remote/switch_left
       - /dart/remote/switch_right
       - /dart/remote/valid
+      - /dart/manual/active_count
+      # 同步带：手动扫行程量全程长度时终端要读（dart-angle）
+      - /dart/belt/left_motor/angle
+      - /dart/belt/right_motor/angle
+      - /dart/belt/left_motor/velocity
+      - /dart/belt/right_motor/velocity
+      # 实测力矩（电流换算）—— 这是判断真拉不动的依据
+      - /dart/belt/left_motor/torque
+      - /dart/belt/right_motor/torque
+      # 力矩指令 / 限幅 / 硬件上限：判断是否真的吃满电流
+      - /dart/belt/left_motor/control_torque
+      - /dart/belt/right_motor/control_torque
+      - /dart/belt/left_motor/control_torque_limit
+      - /dart/belt/right_motor/control_torque_limit
+      - /dart/belt/left_motor/max_torque
+      - /dart/belt/right_motor/max_torque
+      # 目标速度（判断摇杆值有没有送进来）
+      - /dart/belt/left_motor/control_velocity
+      - /dart/belt/right_motor/control_velocity
+      # 弹舱
       - /dart/carriage_motor/applied_torque
       - /dart/carriage_motor/velocity
       - /dart/carriage_motor/control_velocity

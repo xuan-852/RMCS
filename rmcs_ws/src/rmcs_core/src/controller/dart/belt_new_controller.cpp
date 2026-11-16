@@ -1,9 +1,12 @@
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 
 #include <rclcpp/logging.hpp>
 #include <rclcpp/node.hpp>
+#include <rclcpp/parameter_event_handler.hpp>
 #include <rmcs_executor/component.hpp>
 #include <rmcs_msgs/switch.hpp>
 
@@ -29,6 +32,27 @@ namespace rmcs_core::controller::dart {
 //     corr = clamp(sync_gain * err, ±sync_correction_max)
 //     l_vel -= corr / 2
 //     r_vel += corr / 2
+//
+//   ── 运行时 A/B 切换（sync_mode）────────────────────────────────────────────
+//   手动档下两种驱动方式，通过 yaml 参数 `sync_mode` 控制，也可运行时切：
+//
+//     sync_mode: "same"   两侧同速（老镖架行为，默认）
+//       —— 摇杆值原样给两台电机，各自跑自己的速度环，互不干涉。
+//          漂移靠「每次 dart-init 向上归零」重置，不在此处纠正。
+//
+//     sync_mode: "sync"   同步闭环（交叉耦合修正）
+//       —— 按 sync_gain 把位置差折算成速度修正，另含超限停车保护。
+//
+//     sync_mode: "split"  左右独立（调试用，左摇杆 Y=左电机，X=右电机）
+//
+//   运行时切换（不用重启，保持机械状态不变，对比更公平）：
+//     ros2 param set /belt_new_controller sync_mode sync
+//     ros2 param set /belt_new_controller sync_mode same
+//
+//   NaN 透传：上位机写 NaN 表示「放手」（见 NewBeltResource::release()）。
+//   本控制器不拦截 NaN —— NaN 经 PID 变成 NaN，DJI 电调收到 NaN 输出零电流，
+//   弹簧把滑块顶回顶部零点。这是故障安全态，不是异常。
+//   本机构被弹簧顶住，没有重力自由下落这回事。
 // ─────────────────────────────────────────────────────────────────────────────
 class BeltNewController
     : public rmcs_executor::Component
@@ -65,7 +89,15 @@ public:
         load_parameters();
         // 调试模式占左摇杆 X+Y（左右电机各一轴），正常模式只占左摇杆 Y。
         // 两种模式用同一个拨杆档位，不额外占键位。
-        ManualRegistry::add(debug_mode_ ? &kManualDebug : &kManual, this);
+        ManualRegistry::add(&kManual, this);
+
+        // 运行时 A/B 切换：改 sync_mode 立刻生效，不必重启。
+        // 这样对比两种模式时机械状态、上电零点都保持一致，数据才可比。
+        parameter_subscriber_ = std::make_unique<rclcpp::ParameterEventHandler>(this);
+        parameter_callback_ = parameter_subscriber_->add_parameter_callback(
+            "sync_mode", [this](const rclcpp::Parameter& param) {
+                apply_sync_mode(param.as_string());
+            });
     }
 
     BeltNewController(const BeltNewController&) = delete;
@@ -105,6 +137,9 @@ public:
     static void on_auto(void* self) { (void)self; }
 
 private:
+    // 手动档的驱动方式（yaml 参数 sync_mode 控制，可运行时切换）
+    enum class SyncMode { kSame, kSync, kSplit };
+
     template <typename T, typename V>
     void bind_or(InputInterface<T>& interface, V&& value, const char* name) {
         if (interface.ready())
@@ -116,9 +151,6 @@ private:
     void load_parameters() {
         const auto d = [this](const char* n) { return get_parameter(n).as_double(); };
 
-        debug_mode_ = get_parameter("debug_mode").as_bool();
-        debug_torque_limit_ = d("debug_torque_limit");
-
         sensitivity_forward_ = d("sensitivity_forward");
         sensitivity_reverse_ = d("sensitivity_reverse");
         deadzone_ = std::abs(d("deadzone"));
@@ -128,6 +160,36 @@ private:
         sync_correction_max_ = d("sync_correction_max");
         sync_err_limit_ = d("sync_err_limit");
         sync_err_fault_ticks_ = static_cast<int>(get_parameter("sync_err_fault_ticks").as_int());
+
+        debug_torque_limit_ = get_parameter("debug_torque_limit").as_double();
+        apply_sync_mode(get_parameter("sync_mode").as_string());
+    }
+
+    // ── sync_mode 解析 ────────────────────────────────────────────────────────
+    // "same"  两侧同速（老镖架行为）
+    // "sync"  同步闭环
+    // "split" 左右独立（调试）
+    void apply_sync_mode(const std::string& mode) {
+        SyncMode parsed = SyncMode::kSame;  // 未知值一律退化为 same，不静默进入危险模式
+        if (mode == "sync")
+            parsed = SyncMode::kSync;
+        else if (mode == "split")
+            parsed = SyncMode::kSplit;
+        else if (mode != "same")
+            RCLCPP_ERROR(
+                get_logger(), "[BeltNew] unknown sync_mode \"%s\", falling back to \"same\"",
+                mode.c_str());
+
+        if (parsed == sync_mode_)
+            return;
+
+        sync_mode_ = parsed;
+        RCLCPP_INFO(
+            get_logger(), "[BeltNew] sync_mode -> %s %s", mode.c_str(),
+            parsed == SyncMode::kSync
+                ? "(sync loop ON)"
+                : (parsed == SyncMode::kSplit ? "(split: Ly=left, Lx=right)"
+                                              : "(both sides same speed)"));
     }
 
     // ── 把目标转发给两台电机 ──────────────────────────────────────────────────
@@ -149,7 +211,8 @@ private:
             l_cal = r_cal = false;
         }
 
-        if (!debug_mode_)
+        // 同步模式下叠加修正与保护；same / split 直接原样输出
+        if (sync_mode_ == SyncMode::kSync)
             apply_sync(l, r);
 
         *left_control_velocity_ = l;
@@ -165,7 +228,8 @@ private:
     void run_manual(const ManualBinding& binding, const StickSnapshot& sticks) {
         manual_active_ = true;
 
-        if (debug_mode_) {
+        // split：左摇杆 Y 驱动左电机、X 驱动右电机，方便单独验证某一侧
+        if (sync_mode_ == SyncMode::kSplit) {
             const auto to_velocity = [this](double v) {
                 const double n = deadzone_normalize(v, deadzone_);
                 return n * (n >= 0.0 ? sensitivity_forward_ : sensitivity_reverse_);
@@ -220,18 +284,9 @@ private:
     static constexpr ManualOps kOps{&BeltNewController::on_manual,
                                     &BeltNewController::on_auto};
 
+    // 手动档只有一个拨杆组合，具体驱动方式由 sync_mode 决定。
     static constexpr ManualBinding kManual{
         .name = "belt",
-        .left = rmcs_msgs::Switch::UP,
-        .right = rmcs_msgs::Switch::MIDDLE,
-        .side = StickSide::kLeft,
-        .axis = StickAxis::kY,
-        .ops = &kOps,
-    };
-
-    // 调试档位：同一拨杆组合，但左摇杆 Y/X 分别驱动左右电机。
-    static constexpr ManualBinding kManualDebug{
-        .name = "belt-dbg(Ly=L,Lx=R)",
         .left = rmcs_msgs::Switch::UP,
         .right = rmcs_msgs::Switch::MIDDLE,
         .side = StickSide::kLeft,
@@ -275,8 +330,8 @@ private:
     double deadzone_{};
     double manual_torque_limit_{};
 
-    // 调试模式
-    bool debug_mode_{false};
+    // 驱动方式（yaml: sync_mode）+ split 模式的独立力矩上限
+    SyncMode sync_mode_{SyncMode::kSame};
     double debug_torque_limit_{};
 
     // 同步
@@ -284,6 +339,10 @@ private:
     double sync_correction_max_{};
     double sync_err_limit_{};
     int sync_err_fault_ticks_{};
+
+    // 运行时参数切换
+    std::unique_ptr<rclcpp::ParameterEventHandler> parameter_subscriber_;
+    std::shared_ptr<rclcpp::ParameterCallbackHandle> parameter_callback_;
     int sync_err_ticks_{};
 };
 
