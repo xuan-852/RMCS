@@ -73,37 +73,38 @@
 # ═════════════════════════════════════════════════════════════════════════════
 rmcs_executor:
   ros__parameters:
-    update_rate: 1000.0
+    # 4kHz -> 每 tick 250us，500~2500us 可表达 9 档（500/750/1000/.../2500）
+    # 标完舵机后若仅做两态开关也可降回 1000.0
+    update_rate: 4000.0
     components:
       - rmcs_core::hardware::PwmTester -> pwm_tester
 
 pwm_tester:
   ros__parameters:
-    # 当前测试档位：hold_low / hold_high / digital_pulse / analog / sweep / off
+    # 当前测试档位：hold_low / hold_high / servo / servo_sweep / digital_pulse / analog / sweep / off
     #
     # 实测记录（2026-11-11）：
     #   hold_low  时 ch2(R) = 0.0V   ← 能拉低 ✅
     #   hold_high 时 ch2(R) = 3.3V   ← 能拉高 ✅
     #   → gpio_digital_write 完整通到引脚，软件翻转可行
     #   （ch3(T) 未被写入时为 3.3V，是默认上拉态，不作为证据）
-    mode: digital_pulse
+    mode: servo_sweep
 
     # 要测哪个引脚：0=UART0_RX 1=UART0_TX 2=UART1_RX 3=UART1_TX
     channel: 2
 
-    # digital_pulse 模式：软件翻电平，周期 = high + low
-    # ⚠️ update_rate=1kHz 时每 tick = 1ms，脉宽只能取 1ms 整数倍。
-    #    1500us 会被取整成 2 tick 或 1 tick，与真实舵机时序差太多。
-    #    所以这里直接用 tick 粒度能表达的值：
-    #
-    #    high=1000us(1 tick) + low=3000us(3 tick) → 250Hz, 占空比 25%
-    #    万用表应读约 0.83V
-    #
-    #    对照记录（2026-11-11）：
-    #      high=1000 low=1000 (50%) → 实测 1.68V，理论 1.65V ✅
-    #      下面改成 25% 再看电压是否跟着掉到 0.83V
+    # ── servo_sweep：舵机往返标定（正转一趟 → 反转一趟，每档停 3s）──
+    freq_hz: 50.0             # 标准舵机周期 20ms (50Hz)
+    sweep_min_us: 500.0       # 起点脉宽（4kHz 下 2 tick = 500us）
+    sweep_max_us: 2500.0      # 终点脉宽（4kHz 下 10 tick = 2500us）
+    sweep_hold_s: 3.0         # 每个位置停留 3s，便于对照终端日志确认扳机两态对应脉宽
+
+    # ── servo：固定脉宽单点微调（确认出两档后可切 mode: servo 配合 ros2 param set 复核）──
+    pulse_us: 1500.0
+
+    # digital_pulse 模式（保留回归基准：high=1000/low=3000 -> 250Hz 25% 占空比）
     high_us: 1000.0
     low_us: 3000.0
 
-    # sweep 模式：每步增加多少
+    # sweep 模式（analog 用）：每步增加多少
     sweep_step_us: 100.0
