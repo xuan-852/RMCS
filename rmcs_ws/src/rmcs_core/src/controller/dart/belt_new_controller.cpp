@@ -1,12 +1,9 @@
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <memory>
 
 #include <rclcpp/logging.hpp>
 #include <rclcpp/node.hpp>
-#include <rclcpp/parameter_event_handler.hpp>
 #include <rmcs_executor/component.hpp>
 #include <rmcs_msgs/switch.hpp>
 
@@ -33,9 +30,7 @@ namespace rmcs_core::controller::dart {
 //     l_vel -= corr / 2
 //     r_vel += corr / 2
 //
-//   ── 运行时 A/B 切换（sync_mode）────────────────────────────────────────────
-//   手动档下两种驱动方式，通过 yaml 参数 `sync_mode` 控制，也可运行时切：
-//
+//   ── 驱动方式（yaml: sync_mode）───────────────────────────────────────────
 //     sync_mode: "same"   两侧同速（老镖架行为，默认）
 //       —— 摇杆值原样给两台电机，各自跑自己的速度环，互不干涉。
 //          漂移靠「每次 dart-init 向上归零」重置，不在此处纠正。
@@ -44,10 +39,6 @@ namespace rmcs_core::controller::dart {
 //       —— 按 sync_gain 把位置差折算成速度修正，另含超限停车保护。
 //
 //     sync_mode: "split"  左右独立（调试用，左摇杆 Y=左电机，X=右电机）
-//
-//   运行时切换（不用重启，保持机械状态不变，对比更公平）：
-//     ros2 param set /belt_new_controller sync_mode sync
-//     ros2 param set /belt_new_controller sync_mode same
 //
 //   NaN 透传：上位机写 NaN 表示「放手」（见 NewBeltResource::release()）。
 //   本控制器不拦截 NaN —— NaN 经 PID 变成 NaN，DJI 电调收到 NaN 输出零电流，
@@ -90,14 +81,6 @@ public:
         // 调试模式占左摇杆 X+Y（左右电机各一轴），正常模式只占左摇杆 Y。
         // 两种模式用同一个拨杆档位，不额外占键位。
         ManualRegistry::add(&kManual, this);
-
-        // 运行时 A/B 切换：改 sync_mode 立刻生效，不必重启。
-        // 这样对比两种模式时机械状态、上电零点都保持一致，数据才可比。
-        parameter_subscriber_ = std::make_unique<rclcpp::ParameterEventHandler>(this);
-        parameter_callback_ = parameter_subscriber_->add_parameter_callback(
-            "sync_mode", [this](const rclcpp::Parameter& param) {
-                apply_sync_mode(param.as_string());
-            });
     }
 
     BeltNewController(const BeltNewController&) = delete;
@@ -126,8 +109,31 @@ public:
     // 每 tick 一律把「当前目标」转发给电机。手动/自动由 ManualDispatcher 决定谁在写目标。
     // manual_active_ 每 tick 复位，run_manual 命中档位时才置位 —— 松杆离档立刻回到上位机目标。
     void update() override {
-        forward_targets();
+        double l = cmd_l_velocity_.ready() ? *cmd_l_velocity_ : 0.0;
+        double r = cmd_r_velocity_.ready() ? *cmd_r_velocity_ : 0.0;
+        double l_limit = cmd_l_torque_limit_.ready() ? *cmd_l_torque_limit_ : 0.0;
+        double r_limit = cmd_r_torque_limit_.ready() ? *cmd_r_torque_limit_ : 0.0;
+        bool l_cal = cmd_l_calibrate_.ready() && *cmd_l_calibrate_;
+        bool r_cal = cmd_r_calibrate_.ready() && *cmd_r_calibrate_;
+
+        if (manual_active_) {
+            l = manual_l_velocity_;
+            r = manual_r_velocity_;
+            l_limit = r_limit = manual_torque_limit_cmd_;
+            l_cal = r_cal = false;
+        }
         manual_active_ = false;
+
+        // 同步模式下叠加修正与保护；same / split 直接原样输出
+        if (sync_mode_ == SyncMode::kSync)
+            apply_sync(l, r);
+
+        *left_control_velocity_ = l;
+        *right_control_velocity_ = r;
+        *left_control_torque_limit_ = l_limit;
+        *right_control_torque_limit_ = r_limit;
+        *left_calibrate_ = l_cal;
+        *right_calibrate_ = r_cal;
     }
 
     static void on_manual(void* self, const ManualBinding& binding, const StickSnapshot& sticks) {
@@ -137,7 +143,7 @@ public:
     static void on_auto(void* self) { (void)self; }
 
 private:
-    // 手动档的驱动方式（yaml 参数 sync_mode 控制，可运行时切换）
+    // 手动档的驱动方式（启动时由 yaml 参数 sync_mode 决定）
     enum class SyncMode { kSame, kSync, kSplit };
 
     template <typename T, typename V>
@@ -170,61 +176,26 @@ private:
     // "sync"  同步闭环
     // "split" 左右独立（调试）
     void apply_sync_mode(const std::string& mode) {
-        SyncMode parsed = SyncMode::kSame;  // 未知值一律退化为 same，不静默进入危险模式
+        sync_mode_ = SyncMode::kSame;  // 未知值一律退化为 same，不静默进入危险模式
         if (mode == "sync")
-            parsed = SyncMode::kSync;
+            sync_mode_ = SyncMode::kSync;
         else if (mode == "split")
-            parsed = SyncMode::kSplit;
+            sync_mode_ = SyncMode::kSplit;
         else if (mode != "same")
             RCLCPP_ERROR(
                 get_logger(), "[BeltNew] unknown sync_mode \"%s\", falling back to \"same\"",
                 mode.c_str());
 
-        if (parsed == sync_mode_)
-            return;
-
-        sync_mode_ = parsed;
         RCLCPP_INFO(
-            get_logger(), "[BeltNew] sync_mode -> %s %s", mode.c_str(),
-            parsed == SyncMode::kSync
+            get_logger(), "[BeltNew] sync_mode = %s %s", mode.c_str(),
+            sync_mode_ == SyncMode::kSync
                 ? "(sync loop ON)"
-                : (parsed == SyncMode::kSplit ? "(split: Ly=left, Lx=right)"
-                                              : "(both sides same speed)"));
-    }
-
-    // ── 把目标转发给两台电机 ──────────────────────────────────────────────────
-    // 上位机通路：直接读 cmd_* 输入并转发（本类不保存状态）。
-    // 只有手动拨杆接管时，才用摇杆值覆盖。
-    void forward_targets() {
-        double l = cmd_l_velocity_.ready() ? *cmd_l_velocity_ : 0.0;
-        double r = cmd_r_velocity_.ready() ? *cmd_r_velocity_ : 0.0;
-        double l_limit = cmd_l_torque_limit_.ready() ? *cmd_l_torque_limit_ : 0.0;
-        double r_limit = cmd_r_torque_limit_.ready() ? *cmd_r_torque_limit_ : 0.0;
-        bool l_cal = cmd_l_calibrate_.ready() && *cmd_l_calibrate_;
-        bool r_cal = cmd_r_calibrate_.ready() && *cmd_r_calibrate_;
-
-        // 上一 tick 手动写过目标且摇杆仍在本档位 → 摇杆值优先
-        if (manual_active_) {
-            l = manual_l_velocity_;
-            r = manual_r_velocity_;
-            l_limit = r_limit = manual_torque_limit_cmd_;
-            l_cal = r_cal = false;
-        }
-
-        // 同步模式下叠加修正与保护；same / split 直接原样输出
-        if (sync_mode_ == SyncMode::kSync)
-            apply_sync(l, r);
-
-        *left_control_velocity_ = l;
-        *right_control_velocity_ = r;
-        *left_control_torque_limit_ = l_limit;
-        *right_control_torque_limit_ = r_limit;
-        *left_calibrate_ = l_cal;
-        *right_calibrate_ = r_cal;
+                : (sync_mode_ == SyncMode::kSplit ? "(split: Ly=left, Lx=right)"
+                                                  : "(both sides same speed)"));
     }
 
     // ── 手动：摇杆直驱 ────────────────────────────────────────────────────────
-    // 只记录摇杆换算结果，实际输出由 forward_targets 统一产生。
+    // 只记录摇杆换算结果，实际输出由 update() 统一产生。
     void run_manual(const ManualBinding& binding, const StickSnapshot& sticks) {
         manual_active_ = true;
 
@@ -339,10 +310,6 @@ private:
     double sync_correction_max_{};
     double sync_err_limit_{};
     int sync_err_fault_ticks_{};
-
-    // 运行时参数切换
-    std::unique_ptr<rclcpp::ParameterEventHandler> parameter_subscriber_;
-    std::shared_ptr<rclcpp::ParameterCallbackHandle> parameter_callback_;
     int sync_err_ticks_{};
 };
 

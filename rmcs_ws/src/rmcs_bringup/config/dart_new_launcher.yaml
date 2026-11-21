@@ -86,9 +86,6 @@ carriage_motor_velocity_pid:
 #
 #   sync_mode: split  左右独立调试：左摇杆 Y=左电机，X=右电机
 #                     力矩改用 debug_torque_limit（比正常小，防拽坏）
-#
-# 运行时切换（不必重启，机械状态不变，对比更公平）：
-#   ros2 param set /belt_new_controller sync_mode sync
 # ─────────────────────────────────────────────────────────────────────────────
 belt_new_controller:
   ros__parameters:

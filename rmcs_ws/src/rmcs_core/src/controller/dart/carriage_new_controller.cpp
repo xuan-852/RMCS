@@ -71,8 +71,17 @@ public:
     // 手动档位命中时用摇杆值，否则转发上位机目标。
     // manual_active_ 每 tick 复位，离档立刻回到上位机控制。
     void update() override {
-        forward_targets();
+        double velocity = cmd_velocity_.ready() ? *cmd_velocity_ : 0.0;
+        bool calibrate = cmd_calibrate_.ready() && *cmd_calibrate_;
+
+        if (manual_active_) {
+            velocity = manual_velocity_;
+            calibrate = false;
+        }
         manual_active_ = false;
+
+        *control_velocity_ = velocity;
+        *calibrate_ = calibrate;
     }
 
     // ── ManualRegistry 的两个动作 ─────────────────────────────────────────────
@@ -98,20 +107,6 @@ public:
         sensitivity_forward_ = d("sensitivity_forward");
         sensitivity_reverse_ = d("sensitivity_reverse");
         deadzone_ = std::abs(d("deadzone"));
-    }
-
-    // ── 把目标转发给弹舱电机 ──────────────────────────────────────────────────
-    void forward_targets() {
-        double velocity = cmd_velocity_.ready() ? *cmd_velocity_ : 0.0;
-        bool calibrate = cmd_calibrate_.ready() && *cmd_calibrate_;
-
-        if (manual_active_) {
-            velocity = manual_velocity_;
-            calibrate = false;
-        }
-
-        *control_velocity_ = velocity;
-        *calibrate_ = calibrate;
     }
 
     // ── 手动：摇杆直驱 ────────────────────────────────────────────────────────
