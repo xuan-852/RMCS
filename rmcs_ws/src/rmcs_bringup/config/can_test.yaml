@@ -1,0 +1,31 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# C 板 CAN1 ↔ CAN2 双向回环测试配置
+#
+# 用途：验证一块 C 板的 USB 通信与 CAN1 / CAN2 收发硬件是否完好。
+#
+# 接线：
+#   用一根 CAN 线直连 C 板的 CAN1 和 CAN2（CAN1_H ↔ CAN2_H，CAN1_L ↔ CAN2_L）。
+#   不要接任何电机或其他节点。
+#
+# 启动：
+#   build-rmcs --packages-select rmcs_core rmcs_bringup
+#   set-robot can_test
+#   launch-rmcs
+#
+# 判定：
+#   终端每秒打印一行，看到「✅ 双向收发正常」且 CAN1->CAN2 与 CAN2->CAN1 的
+#   增量接近本周期发送数（默认 1000 帧/秒），即说明该 C 板两路 CAN 均完好。
+# ═════════════════════════════════════════════════════════════════════════════
+rmcs_executor:
+  ros__parameters:
+    update_rate: 1000.0
+    components:
+      - rmcs_core::hardware::CanTester -> can_tester
+
+can_tester:
+  ros__parameters:
+    board_serial: ""
+    can1_tx_id: 0x301            # CAN1 发此 ID，期望从 CAN2 收到
+    can2_tx_id: 0x302            # CAN2 发此 ID，期望从 CAN1 收到
+    tx_period_ticks: 1           # 每 1 tick 发一对（1000Hz 压力测试）
+    report_period_ticks: 1000    # 每 1000 tick（1s）打印一次统计
