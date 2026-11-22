@@ -68,6 +68,7 @@ public:
             "/dart/belt/right_motor/control_torque_limit", right_control_torque_limit_, 0.0);
         register_output("/dart/belt/left_motor/calibrate_zero", left_calibrate_, false);
         register_output("/dart/belt/right_motor/calibrate_zero", right_calibrate_, false);
+        register_output("/dart/belt/stalled", stalled_, false);
 
         // 上位机直写目标（经 ManualDispatcher 之外的通路）
         register_input("/dart/belt/left_motor/cmd_velocity", cmd_l_velocity_, false);
@@ -134,6 +135,7 @@ public:
         *right_control_torque_limit_ = r_limit;
         *left_calibrate_ = l_cal;
         *right_calibrate_ = r_cal;
+        *stalled_ = update_stall_detection(l_limit, r_limit);
     }
 
     static void on_manual(void* self, const ManualBinding& binding, const StickSnapshot& sticks) {
@@ -155,20 +157,25 @@ private:
     }
 
     void load_parameters() {
-        const auto d = [this](const char* n) { return get_parameter(n).as_double(); };
+        sensitivity_forward_ = get_parameter("sensitivity_forward").as_double();
+        sensitivity_reverse_ = get_parameter("sensitivity_reverse").as_double();
+        deadzone_ = std::abs(get_parameter("deadzone").as_double());
+        manual_torque_limit_ = get_parameter("manual_torque_limit").as_double();
 
-        sensitivity_forward_ = d("sensitivity_forward");
-        sensitivity_reverse_ = d("sensitivity_reverse");
-        deadzone_ = std::abs(d("deadzone"));
-        manual_torque_limit_ = d("manual_torque_limit");
-
-        sync_gain_ = d("sync_gain");
-        sync_correction_max_ = d("sync_correction_max");
-        sync_err_limit_ = d("sync_err_limit");
+        sync_gain_ = get_parameter("sync_gain").as_double();
+        sync_correction_max_ = get_parameter("sync_correction_max").as_double();
+        sync_err_limit_ = get_parameter("sync_err_limit").as_double();
         sync_err_fault_ticks_ = static_cast<int>(get_parameter("sync_err_fault_ticks").as_int());
 
         debug_torque_limit_ = get_parameter("debug_torque_limit").as_double();
         apply_sync_mode(get_parameter("sync_mode").as_string());
+
+        get_parameter_or("stall_velocity_threshold", stall_velocity_threshold_, 0.05);
+        get_parameter_or("stall_torque_ratio", stall_torque_ratio_, 0.8);
+        get_parameter_or("stall_min_torque", stall_min_torque_, 0.3);
+        int64_t stall_ticks = 50;
+        get_parameter_or("stall_confirm_ticks", stall_ticks, int64_t{50});
+        stall_confirm_ticks_ = static_cast<int>(std::max<int64_t>(1, stall_ticks));
     }
 
     // ── sync_mode 解析 ────────────────────────────────────────────────────────
@@ -249,6 +256,29 @@ private:
         }
     }
 
+    // ── 物理堵转检测 ──────────────────────────────────────────────────────────
+    // 任一侧速度掉到阈值以下且力矩顶到当前限幅的比例，持续足够 tick 即报堵转。
+    // 力矩限幅为 NaN（放手）或 0 时直接清零，不误报。
+    bool update_stall_detection(double l_limit, double r_limit) {
+        const double active_limit = std::max(std::abs(l_limit), std::abs(r_limit));
+        if (!std::isfinite(active_limit) || active_limit <= 1e-6) {
+            stall_ticks_ = 0;
+            return false;
+        }
+
+        const double max_vel = std::max(std::abs(*left_velocity_), std::abs(*right_velocity_));
+        const double max_tq = std::max(std::abs(*left_torque_), std::abs(*right_torque_));
+        const double tq_threshold = std::max(stall_min_torque_, active_limit * stall_torque_ratio_);
+
+        if (max_vel < stall_velocity_threshold_ && max_tq > tq_threshold) {
+            if (stall_ticks_ < stall_confirm_ticks_)
+                ++stall_ticks_;
+        } else {
+            stall_ticks_ = 0;
+        }
+        return stall_ticks_ >= stall_confirm_ticks_;
+    }
+
     // ── 说明书 ────────────────────────────────────────────────────────────────
     // 左拨杆 UP + 右拨杆 MIDDLE → 手动；输入取左摇杆 Y 轴。
     // 与 carriage 同档，左摇杆归 belt、右摇杆归 carriage。
@@ -294,6 +324,7 @@ private:
     OutputInterface<double> right_control_torque_limit_;
     OutputInterface<bool> left_calibrate_;
     OutputInterface<bool> right_calibrate_;
+    OutputInterface<bool> stalled_;
 
     // 手动
     double sensitivity_forward_{};
@@ -311,6 +342,13 @@ private:
     double sync_err_limit_{};
     int sync_err_fault_ticks_{};
     int sync_err_ticks_{};
+
+    // 堵转检测
+    double stall_velocity_threshold_{0.05};
+    double stall_torque_ratio_{0.8};
+    double stall_min_torque_{0.3};
+    int stall_confirm_ticks_{50};
+    int stall_ticks_{0};
 };
 
 } // namespace rmcs_core::controller::dart

@@ -3,6 +3,8 @@ rmcs_executor:
     update_rate: 1000.0
     components:
       - rmcs_core::hardware::DartNewLauncher -> hardware
+      - rmcs_core::controller::planner::SCurvePlanner -> belt_left_planner
+      - rmcs_core::controller::planner::SCurvePlanner -> belt_right_planner
       - rmcs_core::controller::dart::ManualDispatcher -> manual_dispatcher
       - rmcs_core::controller::dart::CarriageNewController -> carriage_new_controller
       - rmcs_core::controller::dart::BeltNewController -> belt_new_controller
@@ -10,6 +12,8 @@ rmcs_executor:
       - rmcs_core::controller::pid::PidController -> belt_left_velocity_pid
       - rmcs_core::controller::pid::PidController -> belt_right_velocity_pid
       - rmcs_core::broadcaster::ValueBroadcaster -> value_broadcaster
+      - rmcs_dart_guidance::v2::BeltActionComponent -> belt_action
+      - rmcs_dart_guidance::v2::CarriageActionComponent -> carriage_action
       - rmcs_dart_guidance::v2::DartAgent -> dart_agent
       - rmcs_dart_guidance::v2::DartAgentRemoteBridge -> dart_agent_remote_bridge
 
@@ -105,6 +109,36 @@ belt_new_controller:
     sync_err_limit: 2.0            # 同步误差告警阈值（rad）
     sync_err_fault_ticks: 1000     # 超限持续多少 tick 判故障停车
 
+    # ── 物理堵转检测（输出 /dart/belt/stalled）──
+    stall_velocity_threshold: 0.05 # |vel| 低于此值（rad/s）
+    stall_torque_ratio: 0.8        # |torque| 超过当前限幅的 80%
+    stall_min_torque: 0.3          # 最低力矩门槛（N·m）
+    stall_confirm_ticks: 50        # 连续持续多少 tick 报堵转
+
+belt_left_planner:
+  ros__parameters:
+    measurement: /dart/belt/left_motor/angle
+    setpoint: /dart/belt/left_motor/target_angle
+    passthrough: /dart/belt/left_motor/direct_velocity
+    velocity_limit: /dart/belt/left_motor/velocity_limit
+    control: /dart/belt/left_motor/cmd_velocity
+    max_velocity: 10.0             # rad/s
+    max_acceleration: 20.0         # rad/s²
+    max_jerk: 100.0                # rad/s³
+    position_kp: 2.0               # 外环位置纠偏 (rad/s)/rad（抗弹簧变负载滞后）
+
+belt_right_planner:
+  ros__parameters:
+    measurement: /dart/belt/right_motor/angle
+    setpoint: /dart/belt/right_motor/target_angle
+    passthrough: /dart/belt/right_motor/direct_velocity
+    velocity_limit: /dart/belt/right_motor/velocity_limit
+    control: /dart/belt/right_motor/cmd_velocity
+    max_velocity: 10.0
+    max_acceleration: 20.0
+    max_jerk: 100.0
+    position_kp: 2.0
+
 belt_left_velocity_pid:
   ros__parameters:
     measurement: /dart/belt/left_motor/velocity
@@ -160,23 +194,40 @@ value_broadcaster:
       - /dart/carriage_motor/torque
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DartAgent（新镖架上位机任务代理）
-#
-# 归零、堵转判断、到位判断全部在这里配。下位机 controller 只转发目标。
-# 任务表：rmcs_dart_automation/src/manager/tasks/task_registry.hpp
-# 任务逻辑：rmcs_dart_automation/src/manager/tasks/dart_tasks.hpp
+# 新镖架上位机三件套：
+#   BeltActionComponent     : rmcs_dart_automation/src/manager/new_dart/belt_action_component.cpp
+#   CarriageActionComponent : rmcs_dart_automation/src/manager/new_dart/carriage_action_component.cpp
+#   DartAgent               : rmcs_dart_automation/src/manager/new_dart/new_dart_manager.cpp
+#   任务剧本                : rmcs_dart_automation/include/rmcs_dart_guidance/new_dart/new_dart_tasks.hpp
 #
 # 命令由 DartAgentRemoteBridge 从 DR16 拨杆翻译而来（照抄老镖架语义）：
-#   左 DOWN → MIDDLE         → dart-init           归零
+#   左 DOWN → MIDDLE         → recover             解锁 FAILED + 清发射计数 + 自动归零
 #   左 MID  + 右 MID→DOWN    → dart-launch-prepare 准备 ⇄ 取消（toggle）
 #   左 MID  + 右 MID→UP      → dart-fire           发射
-#   左 UP   + 右 MID         → 手动档，桥静默
-#   左右双下                 → 静默，硬件层全电机 NaN 急停
-#                              （DartAgent 同时清空任务队列）
+#   左 UP   + 右 MID         → 手动档，桥静默（DartAgent 自动中止运行中任务）
+#   左右双下                 → 静默，硬件层全电机 NaN 急停（DartAgent 锁定 FAILED）
 # ─────────────────────────────────────────────────────────────────────────────
+belt_action:
+  ros__parameters:
+    belt_home_velocity: 5.0          # 归零上推速度
+    belt_down_velocity: 5.0          # 带载下降速度
+    belt_up_velocity: 8.0            # 上升速度
+    homing_torque_limit: 3.0         # 归零力矩上限（要够大才顶得住）
+    belt_load_torque_limit: 6.0      # 带载力矩上限
+    belt_unload_torque_limit: 2.0    # 空载力矩上限
+    arrive_tolerance: 0.03           # 到位容差（rad）
+
+carriage_action:
+  ros__parameters:
+    carriage_home_velocity: 5.0      # 归零向上撞开关
+    carriage_back_off_velocity: 2.0  # 开关触发后退离
+    carriage_back_off_distance: 0.1  # 退离距离（退离后即零位）
+    carriage_goto_velocity: 20.0     # 定位速度上限
+    carriage_goto_gain: 10.0         # P 增益
+    carriage_goto_tolerance: 0.02    # 到位置容差
+
 dart_agent:
   ros__parameters:
-    # ── 飞镖 ──
     dart_count: 4                    # 上场实际装几发（1~8）
     dart_0_carriage_staypoint: 0.0   # 每发的弹舱停位（绝对角度）
     dart_1_carriage_staypoint: 0.0
@@ -186,20 +237,4 @@ dart_agent:
     dart_5_carriage_staypoint: 0.0
     dart_6_carriage_staypoint: 0.0
     dart_7_carriage_staypoint: 0.0
-
-    # ── 同步带 ──
     belt_trigger_distance: 0.0       # 顶部 → 扳机位相对位移（实测填入）
-    belt_home_velocity: 5.0          # 归零上推速度
-    belt_down_velocity: 5.0          # 带载下降速度
-    belt_up_velocity: 8.0            # 上升速度
-    homing_torque_limit: 3.0         # 归零力矩上限（要够大才顶得住）
-    belt_load_torque_limit: 6.0      # 带载力矩上限
-    belt_unload_torque_limit: 2.0    # 空载力矩上限
-
-    # ── 弹舱 ──
-    carriage_home_velocity: 5.0      # 归零向上撞开关
-    carriage_back_off_velocity: 2.0  # 开关触发后退离
-    carriage_back_off_distance: 0.1  # 退离距离（退离后即零位）
-    carriage_goto_velocity: 20.0     # 定位速度上限
-    carriage_goto_gain: 10.0         # P 增益
-    carriage_goto_tolerance: 0.02    # 到位置容差

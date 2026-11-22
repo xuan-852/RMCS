@@ -99,14 +99,12 @@ public:
     }
 
     void load_parameters() {
-        const auto d = [this](const char* n) { return get_parameter(n).as_double(); };
-
         debug_mode_ = get_parameter("debug_mode").as_bool();
-        debug_torque_limit_unused_ = d("debug_torque_limit");
+        debug_torque_limit_unused_ = get_parameter("debug_torque_limit").as_double();
 
-        sensitivity_forward_ = d("sensitivity_forward");
-        sensitivity_reverse_ = d("sensitivity_reverse");
-        deadzone_ = std::abs(d("deadzone"));
+        sensitivity_forward_ = get_parameter("sensitivity_forward").as_double();
+        sensitivity_reverse_ = get_parameter("sensitivity_reverse").as_double();
+        deadzone_ = std::abs(get_parameter("deadzone").as_double());
     }
 
     // ── 手动：摇杆直驱 ────────────────────────────────────────────────────────
