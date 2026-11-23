@@ -20,25 +20,9 @@ rmcs_executor:
 hardware:
   ros__parameters:
     board_serial: ""
-
-    # 微动开关：固定在 Board Lite 的 UART1_RX 上
-    micro_switch_pull_up: true
-    micro_switch_active_low: true
-    micro_switch_read_period_ms: 10
-
-    # 弹舱电机：M3508 / CAN0 / ID1 / 19:1 输出轴速度
-    carriage_motor_id: 1
-    carriage_motor_reduction_ratio: 19.0
-    carriage_motor_reversed: false
-
-    # 同步带左右电机：M3508 / CAN0 / 19:1
-    # ID 待机械装完实测（注意别和 carriage 撞号）
-    belt_left_motor_id: 3
-    belt_right_motor_id: 2
-    belt_motor_reduction_ratio: 19.0
-    # 镜像安装，一侧必须翻转坐标系，让两侧 /angle /velocity /torque 同向
-    belt_left_motor_reversed: false
-    belt_right_motor_reversed: true
+    # 电机 ID/减速比/方向及微动开关配置已写死在 DartNewLauncher 代码中：
+    #   CAN0: ID1=carriage, ID2=belt_left, ID3=belt_right(reversed), 19:1
+    #   GPIO: UART1_RX 上拉、低电平有效
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CarriageNewController
@@ -55,9 +39,7 @@ carriage_new_controller:
     debug_torque_limit: 0.0        # 保留参数位（carriage 无独立力矩限幅）
 
     # ── 手动 ──
-    sensitivity_forward: 10.0      # 摇杆推到底 → rad/s（输出轴）
-    sensitivity_reverse: 10.0      # 摇杆拉到底 → rad/s（输出轴）
-    deadzone: 0.05                 # 摇杆回中死区，避免电机蠕动
+    manual_velocity_sensitivity: 10.0  # 摇杆推到底 → rad/s（输出轴）
 
 
 carriage_motor_velocity_pid:
@@ -98,9 +80,7 @@ belt_new_controller:
     debug_torque_limit: 2.0        # split 模式的力矩上限，比正常小，防拽坏
 
     # ── 手动 ──
-    sensitivity_forward: -10.0     # 摇杆推到底 → rad/s
-    sensitivity_reverse: -10.0     # 摇杆拉到底 → rad/s
-    deadzone: 0.05
+    manual_velocity_sensitivity: -10.0  # 摇杆推到底 → rad/s
     manual_torque_limit: 6.0
 
     # ── 左右同步（仅 sync_mode: sync 生效）──

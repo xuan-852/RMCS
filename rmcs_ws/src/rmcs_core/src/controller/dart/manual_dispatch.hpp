@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -98,21 +97,6 @@ private:
         return list;
     }
 };
-
-// 死区归一化：死区内输出 0，超死区后把 [dz, 1] 线性重映射到 [0, 1]。
-// 这样出死区从 0 平滑起步，不会跳到 deadzone * sensitivity。
-inline double deadzone_normalize(double raw, double deadzone) {
-    const double dz = std::abs(deadzone);
-    if (dz >= 1.0)
-        return 0.0;
-
-    const double magnitude = std::abs(raw);
-    if (magnitude < dz)
-        return 0.0;
-
-    const double normalized = (magnitude - dz) / (1.0 - dz);
-    return raw < 0.0 ? -normalized : normalized;
-}
 
 inline const char* switch_name(rmcs_msgs::Switch s) {
     switch (s) {

@@ -102,21 +102,14 @@ public:
         debug_mode_ = get_parameter("debug_mode").as_bool();
         debug_torque_limit_unused_ = get_parameter("debug_torque_limit").as_double();
 
-        sensitivity_forward_ = get_parameter("sensitivity_forward").as_double();
-        sensitivity_reverse_ = get_parameter("sensitivity_reverse").as_double();
-        deadzone_ = std::abs(get_parameter("deadzone").as_double());
+        manual_velocity_sensitivity_ = get_parameter("manual_velocity_sensitivity").as_double();
     }
 
     // ── 手动：摇杆直驱 ────────────────────────────────────────────────────────
     void run_manual(const ManualBinding& binding, const StickSnapshot& sticks) {
         manual_active_ = true;
-
-        const double raw = ManualRegistry::axis_value(binding, sticks);
-        const double normalized = deadzone_normalize(raw, deadzone_);
-        const double sensitivity =
-            normalized >= 0.0 ? sensitivity_forward_ : sensitivity_reverse_;
-
-        manual_velocity_ = normalized * sensitivity;
+        manual_velocity_ =
+            manual_velocity_sensitivity_ * ManualRegistry::axis_value(binding, sticks);
     }
 
     // ── 说明书 ────────────────────────────────────────────────────────────────
@@ -160,9 +153,7 @@ public:
     // 手动
     bool manual_active_{false};
     double manual_velocity_{0.0};
-    double sensitivity_forward_{};
-    double sensitivity_reverse_{};
-    double deadzone_{};
+    double manual_velocity_sensitivity_{};
 
     // 调试模式（carriage 无独立力矩限幅，保留参数以免 yaml 报未声明）
     bool debug_mode_{false};
