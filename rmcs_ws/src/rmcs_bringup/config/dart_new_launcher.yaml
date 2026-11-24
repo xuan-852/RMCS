@@ -3,8 +3,8 @@ rmcs_executor:
     update_rate: 1000.0
     components:
       - rmcs_core::hardware::DartNewLauncher -> hardware
-      - rmcs_core::controller::planner::SCurvePlanner -> belt_left_planner
-      - rmcs_core::controller::planner::SCurvePlanner -> belt_right_planner
+      - rmcs_core::controller::planner::TrapezoidPlanner -> belt_left_planner
+      - rmcs_core::controller::planner::TrapezoidPlanner -> belt_right_planner
       - rmcs_core::controller::dart::ManualDispatcher -> manual_dispatcher
       - rmcs_core::controller::dart::CarriageNewController -> carriage_new_controller
       - rmcs_core::controller::dart::BeltNewController -> belt_new_controller
@@ -39,7 +39,7 @@ carriage_new_controller:
     debug_torque_limit: 0.0        # 保留参数位（carriage 无独立力矩限幅）
 
     # ── 手动 ──
-    manual_velocity_sensitivity: 10.0  # 摇杆推到底 → rad/s（输出轴）
+    manual_velocity_sensitivity: 15.0  # 摇杆推到底 → rad/s（输出轴）
 
 
 carriage_motor_velocity_pid:
@@ -80,7 +80,7 @@ belt_new_controller:
     debug_torque_limit: 2.0        # split 模式的力矩上限，比正常小，防拽坏
 
     # ── 手动 ──
-    manual_velocity_sensitivity: -10.0  # 摇杆推到底 → rad/s
+    manual_velocity_sensitivity: -15.0  # 摇杆推到底 → rad/s
     manual_torque_limit: 6.0
 
     # ── 左右同步（仅 sync_mode: sync 生效）──
@@ -104,8 +104,6 @@ belt_left_planner:
     control: /dart/belt/left_motor/cmd_velocity
     max_velocity: 10.0             # rad/s
     max_acceleration: 20.0         # rad/s²
-    max_jerk: 100.0                # rad/s³
-    position_kp: 2.0               # 外环位置纠偏 (rad/s)/rad（抗弹簧变负载滞后）
 
 belt_right_planner:
   ros__parameters:
@@ -116,8 +114,6 @@ belt_right_planner:
     control: /dart/belt/right_motor/cmd_velocity
     max_velocity: 10.0
     max_acceleration: 20.0
-    max_jerk: 100.0
-    position_kp: 2.0
 
 belt_left_velocity_pid:
   ros__parameters:
@@ -163,7 +159,11 @@ value_broadcaster:
       - /dart/belt/right_motor/control_torque_limit
       - /dart/belt/left_motor/max_torque
       - /dart/belt/right_motor/max_torque
-      # 目标速度（判断摇杆值有没有送进来）
+      # 目标速度与规划器输出（对照实际 velocity / angle 画曲线）
+      - /dart/belt/left_motor/cmd_velocity
+      - /dart/belt/right_motor/cmd_velocity
+      - /dart/belt/left_motor/target_angle
+      - /dart/belt/right_motor/target_angle
       - /dart/belt/left_motor/control_velocity
       - /dart/belt/right_motor/control_velocity
       # 弹舱
@@ -189,9 +189,11 @@ value_broadcaster:
 # ─────────────────────────────────────────────────────────────────────────────
 belt_action:
   ros__parameters:
-    belt_home_velocity: 5.0          # 归零上推速度
-    belt_down_velocity: 5.0          # 带载下降速度
-    belt_up_velocity: 8.0            # 上升速度
+    belt_home_velocity: 10.0         # 归零上推速度
+    belt_approach_distance: 13.0     # 低速靠近滑块距离（略过 -12.70 碰撞点）
+    belt_approach_velocity: 3.0      # 低速碰滑块速度
+    belt_down_velocity: 10.0         # 接管滑块后带载下降速度
+    belt_up_velocity: 10.0           # 上升速度
     homing_torque_limit: 3.0         # 归零力矩上限（要够大才顶得住）
     belt_load_torque_limit: 6.0      # 带载力矩上限
     belt_unload_torque_limit: 2.0    # 空载力矩上限
@@ -217,4 +219,4 @@ dart_agent:
     dart_5_carriage_staypoint: 0.0
     dart_6_carriage_staypoint: 0.0
     dart_7_carriage_staypoint: 0.0
-    belt_trigger_distance: 0.0       # 顶部 → 扳机位相对位移（实测填入）
+    belt_trigger_distance: 50.5      # 顶部 → 扳机位相对位移（全行程约 51.48，先留余量测试）

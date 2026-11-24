@@ -55,7 +55,7 @@
   <class type="rmcs_core::controller::dart::ManualDispatcher" base_class_type="rmcs_executor::Component" />
 
   <class type="rmcs_core::controller::adrc::AdrcController" base_class_type="rmcs_executor::Component" />
-  <class type="rmcs_core::controller::planner::SCurvePlanner" base_class_type="rmcs_executor::Component" />
+  <class type="rmcs_core::controller::planner::TrapezoidPlanner" base_class_type="rmcs_executor::Component" />
 
   <class type="rmcs_core::broadcaster::TfBroadcaster" base_class_type="rmcs_executor::Component" />
   <class type="rmcs_core::broadcaster::ValueBroadcaster" base_class_type="rmcs_executor::Component" />

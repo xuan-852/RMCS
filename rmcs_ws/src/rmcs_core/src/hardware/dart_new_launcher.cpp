@@ -84,12 +84,12 @@ private:
                     .enable_multi_turn_angle());
 
             belt_left_motor_.configure(
-                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, 2}
+                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, 3}
                     .set_reduction_ratio(19.)
                     .enable_multi_turn_angle());
 
             belt_right_motor_.configure(
-                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, 3}
+                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, 2}
                     .set_reversed()
                     .set_reduction_ratio(19.)
                     .enable_multi_turn_angle());
