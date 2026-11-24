@@ -1,137 +1,62 @@
 # ═════════════════════════════════════════════════════════════════════════════
-# GPIO / PWM 测试专用配置
+# Board Pro 端口综合测试配置（PWM 舵机 + 空闲数字 IO 联动测试）
 #
-# 用途：单独验证 Board Lite 的 GPIO 引脚能不能被软件控制。
-# ⚠️ 与 dart_new_launcher.yaml 互斥 —— 两者都独占同一块板子，不能同时运行。
+# 用途：
+#   在硬件资料/丝印对应关系不全时，一次性摸清 Board Pro 的：
+#     1) PWM 口（channel 0~3 = kPwm0~kPwm3）能否正常发硬件 50Hz 舵机信号；
+#     2) 空闲 IO 口（channel 4~10 = kSpiI2cSocket0~6）各自对应的物理座子与好坏。
+#
+#   ⚠️ 严格不碰任何 UART 引脚（channel 11~16 禁止读写）。
+#   ⚠️ 与 dart_new_launcher.yaml 互斥 —— 两者都独占同一块 Board Pro，不能同时运行。
 #
 # 启动：
 #   set-robot pwm_test
 #   launch-rmcs
 #
-# ─── 测试顺序（由浅入深，前一步不通过就别往下走）─────────────────────────────
-#
-#  第 1 步  mode: hold_low    引脚恒定低电平，万用表应为 0V
-#  第 2 步  mode: hold_high   引脚恒定高电平，万用表应为 3.3V
-#
-#     这两步是硬指标。只有确认能切到低、也能切到高，才说明
-#     gpio_digital_write 这条链路真的通到了引脚，此时才谈得上「软件 PWM」。
-#     若低/高读出来都是 3.3V，说明引脚被 UART 复用占死或固件不处理
-#     digital write —— 那软件 PWM 也就不可能成立，得换硬件方案。
-#
-#  第 3 步  mode: digital_pulse  软件翻电平出方波，示波器看有无波形
-#  第 4 步  mode: analog         复核固件是否解析 analog value
-#  第 5 步  mode: sweep          低频爬 duty，万用表看是否变化
-#  第 6 步  mode: off            不写任何值，观察引脚默认状态
-#
-# ─── channel 可选值 ─────────────────────────────────────────────────────────
-#   0 = UART0_RX    1 = UART0_TX    2 = UART1_RX（默认）    3 = UART1_TX
-#
-#   注：UART0_RX (ch0) 现在接的是微动开关，测别的引脚前先确认没插着开关，
-#       否则会把开关那根线拉低/拉高。
-#
-# ─── 实测结论（2026-11-11，全部通过）─────────────────────────────────────────
-#
-#   ch2 (UART1_RX) 四档扫过，占空比 0%~100% 线性可控：
-#
-#     hold_low      0%    理论 0.00V   实测 0.0V   ✅
-#     high/low=1/3  25%   理论 0.82V   实测 0.83V  ✅
-#     high/low=1/1  50%   理论 1.65V   实测 1.68V  ✅
-#     hold_high     100%  理论 3.30V   实测 3.3V   ✅
-#
-#   → gpio_digital_write 完整通到引脚，软件 PWM 成立。
-#   → 之前「duty=0 与 65535 输出相同」的问题出在固件不解析 analog value，
-#     不是引脚本身的问题。数字写入这条路是通的。
-#
-# ─── 但精度受 update_rate 硬限制 ─────────────────────────────────────────────
-#
-#   update_rate = 1kHz，每 tick = 1ms，脉宽只能是 1ms 的整数倍。
-#   舵机要 1000~2000us，在这个粒度下只有两个可表达点：
-#
-#     1 tick = 1000us  → 一端极限
-#     2 tick = 2000us  → 另一端极限
-#
-#   结论：
-#     ✗ 做不了比例控制（1500us 中位无法表达）
-#     ✓ 但能当"二位置开关舵机"用 —— 扳机只需要"扣下/松开"两态，够用
-#
-#   若要更多档位，需提高 update_rate：
-#     2kHz → 500us 粒度 → 3 个位置
-#     4kHz → 250us 粒度 → 5 个位置
-#    10kHz → 100us 粒度 → 11 个位置
-#   提高前要先评估对整机控制周期的影响。
-#
-# ─── 判定标准 ───────────────────────────────────────────────────────────────
-#
-#   hold_low  读到 0.0V  且  hold_high 读到 3.3V
-#     → 引脚完全可控，软件 PWM 可行，继续测 digital_pulse
-#
-#   hold_low  读到 0.0V  但  hold_high 仍是 0.0V
-#     → 只能拉低不能拉高，开漏/复用限制，软件 PWM 不成立
-#
-#   两档都读到 3.3V
-#     → digital write 根本没通到引脚，换硬件方案
+# 运行时微调舵机脉宽（无需重启）：
+#   ros2 param set /pwm_tester pulse_us 1500
+#   ros2 param set /pwm_tester pulse_us 1250
 # ═════════════════════════════════════════════════════════════════════════════
 rmcs_executor:
   ros__parameters:
-    # 4kHz -> 每 tick 250us，500~2500us 可表达 9 档（500/750/1000/.../2500）
-    # 标完舵机后若仅做两态开关也可降回 1000.0
-    update_rate: 4000.0
+    update_rate: 1000.0
     components:
       - rmcs_core::hardware::PwmTester -> pwm_tester
 
 pwm_tester:
   ros__parameters:
-    # 当前测试档位：hold_low / hold_high / servo / servo_sweep / digital_pulse / analog / sweep / off
-    #
-    # 实测记录（2026-11-11）：
-    #   hold_low  时 ch2(R) = 0.0V   ← 能拉低 ✅
-    #   hold_high 时 ch2(R) = 3.3V   ← 能拉高 ✅
-    #   → gpio_digital_write 完整通到引脚，软件翻转可行
-    #   （ch3(T) 未被写入时为 3.3V，是默认上拉态，不作为证据）
-    #
-    # ── 当前用途：舵机标零（上电即停在 0° 位置，不再自动摆动）───────────────
-    mode: servo
+    board_serial: ""
 
-    # 要测哪个引脚：0=UART0_RX 1=UART0_TX 2=UART1_RX 3=UART1_TX
-    channel: 2
+    # ── 先测硬件 PWM 舵机 ──
+    # 可选 mode：
+    #   hw_servo       : 硬件 PWM 发 pulse_us（仅 0~3，默认先测这个）
+    #   hw_servo_sweep : 硬件 PWM 在 sweep_min_us ~ sweep_max_us 往返扫行程
+    #   hold_low       : 输出恒定 0V（0~10 任意口）
+    #   hold_high      : 输出恒定 3.3V（0~10 任意口）
+    #   digital_pulse  : 软件翻转方波
+    #   analog         : 直接按 high_us/(high_us+low_us) 写占空比（0~3）
+    #   off            : 不输出，仅监听输入 IO
+    mode: hw_servo
 
-    # ── servo_sweep：舵机往返标定（正转一趟 → 反转一趟，每档停 3s）──
-    # 当前未启用，需要扫行程时把 mode 改回 servo_sweep
-    freq_hz: 50.0             # 标准舵机周期 20ms (50Hz)
-    sweep_min_us: 500.0       # 起点脉宽（4kHz 下 2 tick = 500us）
-    sweep_max_us: 2500.0      # 终点脉宽（4kHz 下 10 tick = 2500us）
-    sweep_hold_s: 3.0         # 每个位置停留 3s，便于对照终端日志确认扳机两态对应脉宽
+    # 输出目标通道（仅允许 0~10；hw_servo / hw_servo_sweep / analog 仅允许 0~3）：
+    #   0=Pwm0  1=Pwm1  2=Pwm2  3=Pwm3
+    #   4=SpiI2cSocket0 .. 10=SpiI2cSocket6
+    channel: 3
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # 舵机零位已标定（2026-11-16）
-    # ═══════════════════════════════════════════════════════════════════════
-    #
-    # 舵机型号：天空 GRC 70kg  角度版（非 360° 连续旋转版）
-    #
-    # 已确认：
-    #   · 角度版舵机，脉宽决定角度位置，停在哪就在哪，不会自行转动
-    #   · 启动后输出以下 pulse_us，舵机即停在该零位不动
-    #   · 之前的 servo_sweep 实测表明 500us ↔ 2500us 约对应 180° 摆幅，
-    #     说明机械可用行程约 180°，两端不要贴近，否则撞限位持续堵转
-    #
-    # ⚠️ 零位是装到机构上之后调的，此后只能在此数值基础上微调
-    #    （机构已固定，改大范围会顶到机械限位）
-    #
-    # 微调方法（不用重启）：
-    #     ros2 param set /pwm_tester pulse_us 1500
-    #     ros2 param set /pwm_tester pulse_us 1250
-    #
-    # 4kHz 下可表达 250us 的整数倍，合法档位：
-    #     500 / 750 / 1000 / 1250 / 1500 / 1750 / 2000 / 2250 / 2500
-    #     非 250us 整数倍的值会被四舍五入到最近档位，日志打印实际生效值
-    #
-    # 若要更细粒度：把 rmcs_executor.update_rate 提到 8000（125us 一档）
-    # ═══════════════════════════════════════════════════════════════════════
-    pulse_us: 1500.0          # ← 舵机零位，机构装好后只在此基础微调
+    freq_hz: 50.0             # 舵机 50Hz (20ms 周期)
+    pulse_us: 2050.0          # 初始中位脉宽（支持 ros2 param set /pwm_tester pulse_us 动态修改）//1900
+    sweep_min_us: 500.0
+    sweep_max_us: 2500.0
+    sweep_step_us: 250.0
+    sweep_hold_s: 3.0
 
-    # digital_pulse 模式（保留回归基准：high=1000/low=3000 -> 250Hz 25% 占空比）
+    # ── 空闲数字 IO 实时监测（默认全开 4~10，微动开关插上按下即在终端报跳变）──
+    # 如需测 Pwm 口做输入，也可加进这里；若某号与上面的输出 channel 相同会自动跳过
+    # input_pull: down(下拉 0V，默认) | up(上拉 3.3V) | none(浮空)
+    input_channels: [ 5 ]
+    input_pull: up
+    input_period_ms: 20
+
+    # 备用（digital_pulse / analog 用）
     high_us: 1000.0
     low_us: 3000.0
-
-    # sweep 模式（analog 用）：每步增加多少
-    sweep_step_us: 100.0
