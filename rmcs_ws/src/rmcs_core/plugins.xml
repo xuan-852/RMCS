@@ -52,6 +52,7 @@
   <class type="rmcs_core::controller::dart::YawController" base_class_type="rmcs_executor::Component" />
   <class type="rmcs_core::controller::dart::CarriageNewController" base_class_type="rmcs_executor::Component" />
   <class type="rmcs_core::controller::dart::BeltNewController" base_class_type="rmcs_executor::Component" />
+  <class type="rmcs_core::controller::dart::TriggerNewController" base_class_type="rmcs_executor::Component" />
   <class type="rmcs_core::controller::dart::ManualDispatcher" base_class_type="rmcs_executor::Component" />
 
   <class type="rmcs_core::controller::adrc::AdrcController" base_class_type="rmcs_executor::Component" />

@@ -33,6 +33,7 @@ public:
         register_input("/remote/switch/right", switch_right_, false);
         register_input("/remote/joystick/left", joystick_left_, false);
         register_input("/remote/joystick/right", joystick_right_, false);
+        register_input("/remote/rotary_knob", rotary_knob_, false);
 
         register_output("/dart/manual/active_count", active_count_, 0.0);
     }
@@ -63,6 +64,10 @@ public:
             joystick_right_.make_and_bind_directly(Eigen::Vector2d::Zero());
             RCLCPP_WARN(get_logger(), "Failed to fetch \"/remote/joystick/right\". Set to zero.");
         }
+        if (!rotary_knob_.ready()) {
+            rotary_knob_.make_and_bind_directly(0.0);
+            RCLCPP_WARN(get_logger(), "Failed to fetch \"/remote/rotary_knob\". Set to zero.");
+        }
 
         dump_registry();
     }
@@ -70,6 +75,7 @@ public:
     void update() override {
         sticks_.left = *joystick_left_;
         sticks_.right = *joystick_right_;
+        sticks_.rotary_knob = *rotary_knob_;
 
         const auto count = ManualRegistry::dispatch(*switch_left_, *switch_right_, sticks_);
         *active_count_ = static_cast<double>(count);
@@ -83,11 +89,19 @@ private:
 
         for (const auto& entry : entries) {
             const auto& b = *entry.binding;
-            RCLCPP_INFO(
-                get_logger(), "[ManualDispatcher]   %-10s left=%-4s right=%-4s stick=%-5s axis=%s",
-                b.name, switch_name(b.left), switch_name(b.right),
-                b.side == StickSide::kRight ? "right" : "left",
-                b.axis == StickAxis::kY ? "Y" : "X");
+            if (b.axis == StickAxis::kRotary) {
+                RCLCPP_INFO(
+                    get_logger(), "[ManualDispatcher]   %-10s left=%-4s right=%-4s input=rotary_knob",
+                    b.name, b.any_enabled_switch ? "ANY" : switch_name(b.left),
+                    b.any_enabled_switch ? "ANY" : switch_name(b.right));
+            } else {
+                RCLCPP_INFO(
+                    get_logger(), "[ManualDispatcher]   %-10s left=%-4s right=%-4s stick=%-5s axis=%s",
+                    b.name, b.any_enabled_switch ? "ANY" : switch_name(b.left),
+                    b.any_enabled_switch ? "ANY" : switch_name(b.right),
+                    b.side == StickSide::kRight ? "right" : "left",
+                    b.axis == StickAxis::kY ? "Y" : "X");
+            }
         }
     }
 
@@ -95,6 +109,7 @@ private:
     InputInterface<rmcs_msgs::Switch> switch_right_;
     InputInterface<Eigen::Vector2d> joystick_left_;
     InputInterface<Eigen::Vector2d> joystick_right_;
+    InputInterface<double> rotary_knob_;
 
     OutputInterface<double> active_count_;
 

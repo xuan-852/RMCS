@@ -25,12 +25,13 @@ namespace rmcs_core::controller::dart {
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum class StickSide : std::uint8_t { kLeft, kRight };
-enum class StickAxis : std::uint8_t { kX, kY };
+enum class StickAxis : std::uint8_t { kX, kY, kRotary };
 
-// 一帧摇杆快照（x 右为正、y 上为正）
+// 一帧摇杆与滚轮快照（x 右为正、y 上为正、rotary_knob 范围 [-1, 1]）
 struct StickSnapshot {
     Eigen::Vector2d left{Eigen::Vector2d::Zero()};
     Eigen::Vector2d right{Eigen::Vector2d::Zero()};
+    double rotary_knob{0.0};
 };
 
 struct ManualBinding;
@@ -52,6 +53,9 @@ struct ManualBinding {
     StickAxis axis;
 
     const ManualOps* ops;
+
+    // true 时：除 UNKNOWN 和双下急停外的所有已使能档位均可进入 update_manual（如全局滚轮调试）
+    bool any_enabled_switch{false};
 };
 
 class ManualRegistry {
@@ -70,11 +74,17 @@ public:
     static std::size_t dispatch(
         rmcs_msgs::Switch left, rmcs_msgs::Switch right, const StickSnapshot& sticks) {
         std::size_t manual_count = 0;
+        const bool enabled = left != rmcs_msgs::Switch::UNKNOWN
+                          && right != rmcs_msgs::Switch::UNKNOWN
+                          && !(left == rmcs_msgs::Switch::DOWN && right == rmcs_msgs::Switch::DOWN);
 
         for (const auto& entry : entries()) {
             const auto& binding = *entry.binding;
+            const bool hit = binding.any_enabled_switch
+                               ? enabled
+                               : (left == binding.left && right == binding.right);
 
-            if (left == binding.left && right == binding.right) {
+            if (hit) {
                 binding.ops->update_manual(entry.self, binding, sticks);
                 ++manual_count;
             } else {
@@ -85,8 +95,10 @@ public:
         return manual_count;
     }
 
-    // 按说明书取出对应摇杆的对应轴
+    // 按说明书取出对应摇杆轴或滚轮值
     static double axis_value(const ManualBinding& binding, const StickSnapshot& sticks) {
+        if (binding.axis == StickAxis::kRotary)
+            return sticks.rotary_knob;
         const auto& stick = binding.side == StickSide::kRight ? sticks.right : sticks.left;
         return binding.axis == StickAxis::kY ? stick.y() : stick.x();
     }

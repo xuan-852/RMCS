@@ -19,9 +19,11 @@ public:
               * std::numeric_limits<uint16_t>::max()) {
         command_component.register_input(name + "/value", value_);
     }
-    constexpr uint16_t generate_duty_cycle() const {
-        double value = std::clamp(*value_, 0.0, 1.0);
-        double duty = duty_offset_ + (value * duty_scale_);
+    constexpr uint16_t generate_duty_cycle() const { return generate_duty_cycle(*value_); }
+
+    constexpr uint16_t generate_duty_cycle(double value) const {
+        const double clamped = std::clamp(value, 0.0, 1.0);
+        const double duty = duty_offset_ + (clamped * duty_scale_);
         return static_cast<uint16_t>(std::round(duty));
     }
 

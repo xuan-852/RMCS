@@ -8,6 +8,7 @@ rmcs_executor:
       - rmcs_core::controller::dart::ManualDispatcher -> manual_dispatcher
       - rmcs_core::controller::dart::CarriageNewController -> carriage_new_controller
       - rmcs_core::controller::dart::BeltNewController -> belt_new_controller
+      - rmcs_core::controller::dart::TriggerNewController -> trigger_new_controller
       - rmcs_core::controller::pid::PidController -> carriage_motor_velocity_pid
       - rmcs_core::controller::pid::PidController -> belt_left_velocity_pid
       - rmcs_core::controller::pid::PidController -> belt_right_velocity_pid
@@ -20,8 +21,9 @@ rmcs_executor:
 hardware:
   ros__parameters:
     board_serial: ""
-    # 电机 ID/减速比/方向及微动开关配置已写死在 DartNewLauncher 代码中：
-    #   CAN0: ID1=carriage, ID2=belt_left, ID3=belt_right(reversed), 19:1
+    # 硬件端口、电机 ID/减速比/方向及微动开关配置已写死在 DartNewLauncher 代码中：
+    #   CAN1: ID1=carriage, ID2=belt_left, ID3=belt_right(reversed), 19:1
+    #   PWM3: trigger_servo 50Hz (0.0=1900us 发射 ~ 1.0=2050us 锁住)
     #   GPIO: UART1_RX 上拉、低电平有效
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -54,6 +56,20 @@ carriage_motor_velocity_pid:
     integral_max: 500.0
     output_min: -3.0
     output_max: 3.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TriggerNewController
+#   扳机舵机（Board Pro PWM3）：
+#     /dart/trigger_servo/value ∈ [0.0, 1.0] → 1900 us（发射）~ 2050 us（锁住）
+# ─────────────────────────────────────────────────────────────────────────────
+trigger_new_controller:
+  ros__parameters:
+    wheel_always_active: true     # true=任意使能档位均可用滚轮切换扳机；false=仅手动档（待上位机接管后改 false）
+    wheel_invert: false           # 若向最右拨不是正方向（未触发切换），改 true 即可
+    wheel_trigger_threshold: 0.75 # 滚轮拨到最右触发切换阈值
+    wheel_release_threshold: 0.45 # 滚轮回弹低于此值才允许下一次切换（防抖）
+    initial_value: 0.0            # 使能后初始态：0.0=1900us 发射/释放；按最右循环切换 0.0 ⇄ 1.0
+    safe_lock_value: 1.0          # 断控/双下急停默认安全位（1.0 = 2050us 锁住）
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BeltNewController
@@ -143,6 +159,8 @@ value_broadcaster:
       - /dart/remote/switch_left
       - /dart/remote/switch_right
       - /dart/remote/valid
+      - /remote/rotary_knob
+      - /dart/trigger_servo/value
       - /dart/manual/active_count
       # 同步带：手动扫行程量全程长度时终端要读（dart-angle）
       - /dart/belt/left_motor/angle

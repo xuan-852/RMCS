@@ -6,6 +6,7 @@
 #include "hardware/device/dji_motor.hpp"
 #include "hardware/device/dr16.hpp"
 #include "hardware/device/limit_switch.hpp"
+#include "hardware/device/pwm_servo.hpp"
 #include "hardware/device/remote_control.hpp"
 
 #include <librmcs/board/rmcs_board_pro.hpp>
@@ -68,7 +69,8 @@ private:
             , carriage_motor_(launcher, launcher_command, "/dart/carriage_motor")
             , belt_left_motor_(launcher, launcher_command, "/dart/belt/left_motor")
             , belt_right_motor_(launcher, launcher_command, "/dart/belt/right_motor")
-            , remote_control_(launcher) {
+            , remote_control_(launcher)
+            , trigger_servo_{launcher_command, "/dart/trigger_servo", 20.0, 1.90, 2.07} {
 
             // 调试观察输出
             launcher.register_output("/dart/micro_switch/observed", micro_switch_observed_, 0.0);
@@ -84,12 +86,12 @@ private:
                     .enable_multi_turn_angle());
 
             belt_left_motor_.configure(
-                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, 3}
+                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, 2}
                     .set_reduction_ratio(19.)
                     .enable_multi_turn_angle());
 
             belt_right_motor_.configure(
-                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, 2}
+                device::DjiMotor::Config{device::DjiMotor::Type::kM3508, 3}
                     .set_reversed()
                     .set_reduction_ratio(19.)
                     .enable_multi_turn_angle());
@@ -97,19 +99,27 @@ private:
             board_ = std::make_unique<librmcs::board::RmcsBoardPro>(*this, board_serial);
 
             // 微动开关：Board Pro UART1_RX，内部上拉，10ms 周期读，低电平有效
-            board_->start_transmit().gpio_digital_read(
-                Spec::kGpios.kUart1Rx,
-                {
-                    .period_ms = 10,
-                    .pull = librmcs::data::GpioPull::kUp,
-                });
+            // 扳机舵机：Board Pro PWM3（50Hz，1.90ms 释放 ~ 2.05ms 锁住），上电默认输出锁住脉宽
+            {
+                auto init_tx = board_->start_transmit();
+                init_tx.gpio_digital_read(
+                    Spec::kGpios.kUart1Rx,
+                    {
+                        .period_ms = 10,
+                        .pull = librmcs::data::GpioPull::kUp,
+                    });
+                init_tx.gpio_analog_write(
+                    Spec::kGpios.kPwm3,
+                    librmcs::data::GpioAnalogDataView{
+                        .value = trigger_servo_.generate_duty_cycle(1.0)});
+            }
 
             remote_control_.register_dr16(&dr16_);
 
             RCLCPP_INFO(
                 logger_,
                 "[DartNewLauncher] ready (Board Pro CAN1: ID1=carriage, ID2=belt_L, ID3=belt_R; "
-                "micro_switch=UART1_RX)");
+                "PWM3=trigger_servo 1.90~2.05ms; micro_switch=UART1_RX)");
         }
 
         void update() {
@@ -166,6 +176,13 @@ private:
 
             *applied_torque_ = carriage_motor_.control_torque();
 
+            // 扳机舵机：Board Pro 硬件 PWM3（0.0=1900us 发射, 1.0=2050us 锁住；断控/急停强制锁住）
+            builder.gpio_analog_write(
+                Spec::kGpios.kPwm3,
+                librmcs::data::GpioAnalogDataView{
+                    .value = motor_disabled_ ? trigger_servo_.generate_duty_cycle(1.0)
+                                             : trigger_servo_.generate_duty_cycle()});
+
             builder.can_transmit(
                 Spec::kCans.kCan1, //
                 {
@@ -213,13 +230,14 @@ private:
         device::DjiMotor belt_right_motor_;
         device::Dr16 dr16_;
         device::RemoteControl remote_control_;
+        device::PWMServo trigger_servo_;
 
         OutputInterface<double> remote_switch_left_;
         OutputInterface<double> remote_switch_right_;
         OutputInterface<double> remote_valid_;
         OutputInterface<double> applied_torque_;
 
-        bool motor_disabled_{false};
+        bool motor_disabled_{true};
 
         std::unique_ptr<librmcs::board::RmcsBoardPro> board_;
     };
